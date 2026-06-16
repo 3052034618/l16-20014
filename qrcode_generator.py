@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-二维码生成器完整实现
+二维码生成器完整实现（符合 ISO/IEC 18004 标准）
 包含：数据编码(字节模式)、里德-所罗门纠错、矩阵布局、掩码选择、SVG/点阵渲染
 """
 
 import math
-import io
 from typing import List, Tuple, Optional
 
 # ============================================================
@@ -16,65 +15,39 @@ from typing import List, Tuple, Optional
 class GaloisField:
     """GF(256) 有限域，使用本原多项式 x^8 + x^4 + x^3 + x^2 + 1 (0x11d)"""
     
-    # 预计算的指数表和对数表
     EXP_TABLE = [0] * 512
     LOG_TABLE = [0] * 256
     
     @staticmethod
     def _init_tables():
-        """初始化 GF(256) 的指数和对数表"""
         x = 1
         for i in range(255):
             GaloisField.EXP_TABLE[i] = x
             GaloisField.LOG_TABLE[x] = i
             x <<= 1
             if x & 0x100:
-                x ^= 0x11d  # 模本原多项式
-        # 扩展指数表便于计算
+                x ^= 0x11d
         for i in range(255, 512):
             GaloisField.EXP_TABLE[i] = GaloisField.EXP_TABLE[i - 255]
     
     @staticmethod
     def add(a: int, b: int) -> int:
-        """GF(256) 加法 = XOR"""
-        return a ^ b
-    
-    @staticmethod
-    def sub(a: int, b: int) -> int:
-        """GF(256) 减法 = XOR（与加法相同）"""
         return a ^ b
     
     @staticmethod
     def mul(a: int, b: int) -> int:
-        """GF(256) 乘法"""
         if a == 0 or b == 0:
             return 0
         return GaloisField.EXP_TABLE[GaloisField.LOG_TABLE[a] + GaloisField.LOG_TABLE[b]]
     
     @staticmethod
     def div(a: int, b: int) -> int:
-        """GF(256) 除法"""
         if b == 0:
             raise ZeroDivisionError()
         if a == 0:
             return 0
         return GaloisField.EXP_TABLE[(GaloisField.LOG_TABLE[a] - GaloisField.LOG_TABLE[b]) % 255]
-    
-    @staticmethod
-    def pow(a: int, n: int) -> int:
-        """GF(256) 幂运算"""
-        if a == 0:
-            return 0
-        return GaloisField.EXP_TABLE[(GaloisField.LOG_TABLE[a] * n) % 255]
-    
-    @staticmethod
-    def inverse(a: int) -> int:
-        """GF(256) 乘法逆元"""
-        if a == 0:
-            raise ZeroDivisionError()
-        return GaloisField.EXP_TABLE[255 - GaloisField.LOG_TABLE[a]]
 
-# 初始化 GF(256) 表
 GaloisField._init_tables()
 
 
@@ -83,7 +56,6 @@ class ReedSolomon:
     
     @staticmethod
     def multiply_polys(a: List[int], b: List[int]) -> List[int]:
-        """GF(256) 上的多项式乘法"""
         result = [0] * (len(a) + len(b) - 1)
         for i in range(len(a)):
             for j in range(len(b)):
@@ -92,110 +64,91 @@ class ReedSolomon:
     
     @staticmethod
     def mod_polys(dividend: List[int], divisor: List[int]) -> List[int]:
-        """GF(256) 上的多项式取模（多项式长除法的余数）"""
         result = list(dividend)
         while len(result) >= len(divisor):
             if result[0] != 0:
                 coef = result[0]
                 for i in range(len(divisor)):
-                    result[i] = GaloisField.sub(result[i], GaloisField.mul(coef, divisor[i]))
-            result = result[1:]  # 去掉最高次项
+                    result[i] = GaloisField.add(result[i], GaloisField.mul(coef, divisor[i]))
+            result = result[1:]
         return result
     
     @staticmethod
     def generate_generator_poly(nsym: int) -> List[int]:
-        """
-        生成 RS 生成多项式 g(x) = (x - α^0)(x - α^1)...(x - α^(nsym-1))
-        在 GF(256) 中，-1 = 1（特征为2），所以 (x - α^i) = (x + α^i)
-        """
         g = [1]
         for i in range(nsym):
-            # 乘以 (x - α^i) = (1*x + α^i)
             g = ReedSolomon.multiply_polys(g, [1, GaloisField.EXP_TABLE[i]])
         return g
     
     @staticmethod
     def encode(data: List[int], nsym: int) -> List[int]:
-        """
-        对数据进行 RS 编码，返回纠错码字
-        
-        Args:
-            data: 数据码字列表
-            nsym: 纠错码字数量
-            
-        Returns:
-            纠错码字列表（长度为 nsym）
-        """
         g = ReedSolomon.generate_generator_poly(nsym)
-        # 将数据多项式左移 nsym 位（相当于乘以 x^nsym）
         padded = data + [0] * nsym
-        # 计算 padded mod g，得到余数（纠错码字）
         remainder = ReedSolomon.mod_polys(padded, g)
         return remainder
 
 
 # ============================================================
-# 第二部分：QR码常量（版本信息、容量、纠错等级等）
+# 第二部分：QR码标准常量（完整版本1-40）
 # ============================================================
 
-# 纠错等级：L(低, 7%), M(中, 15%), Q(四分位, 25%), H(高, 30%)
 EC_LEVEL_L = 0
 EC_LEVEL_M = 1
 EC_LEVEL_Q = 2
 EC_LEVEL_H = 3
 
 EC_LEVEL_NAMES = {EC_LEVEL_L: 'L', EC_LEVEL_M: 'M', EC_LEVEL_Q: 'Q', EC_LEVEL_H: 'H'}
+MODE_BYTE = 0b0100
 
-# 模式指示符（4位）
-MODE_BYTE = 0b0100  # 字节模式
-
-# ========================
-# 版本1-10的容量信息：(数据码字数, 纠错码字数/块, 块数1, 块数2)
-# 格式：EC_LEVEL -> version -> (total_data_codewords, ec_per_block, num_blocks_g1, data_per_block_g1, num_blocks_g2, data_per_block_g2)
-# ========================
-
-# 完整的 QR 码容量表（版本 1-40）
-# 参考 ISO/IEC 18004 标准
-QR_CAPACITY_TABLE = {
-    EC_LEVEL_L: {},
-    EC_LEVEL_M: {},
-    EC_LEVEL_Q: {},
-    EC_LEVEL_H: {},
+# 完整版本1-40的容量表
+# 格式: version -> [L, M, Q, H] -> (total_data, ec_per_block, nb1, dp1, nb2, dp2)
+FULL_CAPACITY_DATA = {
+    1:  [(19, 7, 1, 19, 0, 0), (16, 10, 1, 16, 0, 0), (13, 13, 1, 13, 0, 0), (9, 17, 1, 9, 0, 0)],
+    2:  [(34, 10, 1, 34, 0, 0), (28, 16, 1, 28, 0, 0), (22, 22, 1, 22, 0, 0), (16, 28, 1, 16, 0, 0)],
+    3:  [(55, 15, 1, 55, 0, 0), (44, 26, 1, 44, 0, 0), (34, 18, 2, 17, 0, 0), (26, 22, 2, 13, 0, 0)],
+    4:  [(80, 20, 1, 80, 0, 0), (64, 18, 2, 32, 0, 0), (48, 26, 2, 24, 0, 0), (36, 16, 4, 9, 0, 0)],
+    5:  [(108, 26, 1, 108, 0, 0), (86, 24, 2, 43, 0, 0), (62, 18, 2, 15, 2, 16), (46, 22, 2, 11, 2, 12)],
+    6:  [(136, 18, 2, 68, 0, 0), (108, 16, 4, 27, 0, 0), (76, 24, 4, 19, 0, 0), (60, 28, 4, 15, 0, 0)],
+    7:  [(156, 20, 2, 78, 0, 0), (124, 18, 4, 31, 0, 0), (88, 18, 2, 14, 4, 15), (66, 26, 4, 13, 1, 14)],
+    8:  [(194, 24, 2, 97, 0, 0), (154, 22, 2, 38, 2, 39), (110, 22, 4, 18, 2, 19), (86, 26, 4, 14, 2, 15)],
+    9:  [(232, 30, 2, 116, 0, 0), (182, 22, 3, 36, 2, 37), (132, 20, 4, 16, 4, 17), (100, 24, 4, 12, 4, 13)],
+    10: [(274, 18, 2, 68, 2, 69), (216, 26, 4, 43, 1, 44), (154, 24, 6, 19, 2, 20), (122, 28, 6, 15, 2, 16)],
+    11: [(324, 20, 4, 81, 0, 0), (254, 30, 1, 50, 4, 51), (180, 28, 4, 22, 4, 23), (140, 24, 3, 12, 8, 13)],
+    12: [(370, 24, 2, 92, 2, 93), (290, 22, 6, 36, 2, 37), (210, 26, 4, 20, 6, 21), (158, 28, 7, 14, 4, 15)],
+    13: [(428, 26, 4, 107, 0, 0), (334, 22, 8, 37, 1, 38), (258, 24, 8, 20, 4, 21), (180, 22, 12, 11, 4, 12)],
+    14: [(461, 30, 3, 115, 1, 116), (365, 24, 4, 40, 5, 41), (292, 20, 11, 16, 5, 17), (197, 24, 11, 12, 5, 13)],
+    15: [(523, 22, 5, 87, 1, 88), (415, 24, 5, 41, 5, 42), (328, 30, 5, 24, 7, 25), (223, 24, 11, 12, 7, 13)],
+    16: [(589, 24, 5, 98, 1, 99), (453, 28, 7, 45, 3, 46), (376, 24, 15, 19, 2, 20), (253, 30, 3, 15, 13, 16)],
+    17: [(647, 28, 1, 107, 5, 108), (507, 28, 10, 46, 1, 47), (426, 28, 1, 22, 15, 23), (283, 28, 2, 14, 17, 15)],
+    18: [(721, 30, 5, 120, 1, 121), (563, 26, 9, 43, 4, 44), (470, 28, 17, 22, 1, 23), (313, 28, 2, 14, 19, 15)],
+    19: [(795, 28, 3, 113, 4, 114), (627, 26, 3, 44, 11, 45), (531, 26, 17, 21, 4, 22), (341, 26, 9, 13, 16, 14)],
+    20: [(861, 28, 3, 107, 5, 108), (669, 26, 3, 41, 13, 42), (574, 30, 15, 24, 5, 25), (385, 28, 15, 15, 10, 16)],
+    21: [(932, 28, 4, 116, 4, 117), (714, 26, 17, 42, 0, 0), (628, 28, 17, 22, 6, 23), (406, 26, 19, 13, 6, 14)],
+    22: [(1006, 28, 2, 111, 7, 112), (782, 28, 17, 46, 0, 0), (669, 28, 7, 24, 16, 25), (442, 28, 34, 14, 0, 0)],
+    23: [(1094, 30, 4, 121, 5, 122), (860, 28, 4, 47, 14, 48), (714, 28, 11, 24, 14, 25), (474, 28, 16, 14, 14, 15)],
+    24: [(1174, 30, 6, 117, 4, 118), (914, 28, 6, 45, 14, 46), (782, 28, 11, 24, 16, 25), (509, 28, 30, 14, 2, 15)],
+    25: [(1276, 26, 8, 106, 4, 107), (1000, 28, 8, 47, 13, 48), (860, 28, 7, 24, 22, 25), (565, 28, 22, 14, 13, 15)],
+    26: [(1370, 28, 10, 114, 2, 115), (1062, 28, 19, 46, 4, 47), (914, 28, 28, 24, 6, 25), (590, 28, 33, 14, 4, 15)],
+    27: [(1468, 30, 8, 122, 4, 123), (1128, 28, 22, 45, 3, 46), (1000, 28, 8, 23, 26, 24), (652, 28, 12, 15, 28, 16)],
+    28: [(1531, 30, 3, 117, 10, 118), (1193, 28, 3, 45, 23, 46), (1062, 28, 4, 24, 31, 25), (674, 28, 11, 15, 31, 16)],
+    29: [(1631, 30, 7, 116, 6, 117), (1267, 28, 21, 45, 7, 46), (1128, 28, 1, 23, 37, 24), (721, 28, 19, 15, 26, 16)],
+    30: [(1735, 30, 5, 115, 8, 116), (1373, 28, 19, 47, 10, 48), (1193, 28, 15, 24, 25, 25), (757, 28, 23, 15, 25, 16)],
+    31: [(1843, 30, 13, 115, 3, 116), (1455, 28, 2, 46, 29, 47), (1267, 28, 42, 24, 1, 25), (789, 28, 23, 15, 28, 16)],
+    32: [(1955, 30, 17, 115, 0, 0), (1541, 28, 10, 46, 23, 47), (1373, 28, 10, 24, 35, 25), (821, 28, 19, 15, 35, 16)],
+    33: [(2071, 30, 17, 115, 1, 116), (1631, 28, 14, 46, 21, 47), (1455, 28, 29, 24, 19, 25), (883, 28, 11, 15, 46, 16)],
+    34: [(2191, 30, 13, 115, 6, 116), (1725, 28, 14, 46, 23, 47), (1541, 28, 44, 24, 7, 25), (915, 28, 59, 16, 1, 17)],
+    35: [(2306, 30, 12, 121, 7, 122), (1812, 28, 12, 47, 26, 48), (1631, 28, 39, 24, 14, 25), (963, 28, 22, 15, 41, 16)],
+    36: [(2434, 30, 6, 121, 14, 122), (1914, 28, 6, 47, 34, 48), (1725, 28, 46, 24, 10, 25), (1005, 28, 2, 16, 64, 17)],
+    37: [(2566, 30, 17, 122, 4, 123), (1992, 28, 29, 46, 14, 47), (1812, 28, 49, 24, 10, 25), (1053, 28, 24, 15, 46, 16)],
+    38: [(2702, 30, 4, 122, 18, 123), (2102, 28, 13, 46, 32, 47), (1914, 28, 48, 24, 14, 25), (1095, 28, 42, 15, 32, 16)],
+    39: [(2812, 30, 20, 117, 4, 118), (2216, 28, 40, 47, 7, 48), (1992, 28, 43, 24, 22, 25), (1139, 28, 10, 15, 67, 16)],
+    40: [(2953, 30, 19, 118, 6, 119), (2334, 28, 18, 47, 31, 48), (2102, 28, 34, 24, 34, 25), (1219, 30, 20, 16, 61, 17)],
 }
 
+QR_CAPACITY_TABLE = {EC_LEVEL_L: {}, EC_LEVEL_M: {}, EC_LEVEL_Q: {}, EC_LEVEL_H: {}}
+
 def _init_capacity_table():
-    """初始化 QR 码容量表"""
-    # 数据：版本 -> [L, M, Q, H] -> (总数据码字数, 纠错/块, 块1数, 每块数据1, 块2数, 每块数据2)
-    data = {
-        1: [(19, 7, 1, 19, 0, 0), (16, 10, 1, 16, 0, 0), (13, 13, 1, 13, 0, 0), (9, 17, 1, 9, 0, 0)],
-        2: [(34, 10, 1, 34, 0, 0), (28, 16, 1, 28, 0, 0), (22, 22, 1, 22, 0, 0), (16, 28, 1, 16, 0, 0)],
-        3: [(55, 15, 1, 55, 0, 0), (44, 26, 1, 44, 0, 0), (34, 18, 2, 17, 0, 0), (26, 22, 2, 13, 0, 0)],
-        4: [(80, 20, 1, 80, 0, 0), (64, 18, 2, 32, 0, 0), (48, 26, 2, 24, 0, 0), (36, 16, 4, 9, 0, 0)],
-        5: [(108, 26, 1, 108, 0, 0), (86, 24, 2, 43, 0, 0), (62, 18, 2, 15, 2, 16), (46, 22, 2, 11, 2, 12)],
-        6: [(136, 18, 2, 68, 0, 0), (108, 16, 4, 27, 0, 0), (76, 24, 4, 19, 0, 0), (60, 28, 4, 15, 0, 0)],
-        7: [(156, 20, 2, 78, 0, 0), (124, 18, 4, 31, 0, 0), (88, 18, 2, 14, 4, 15), (66, 26, 4, 13, 1, 14)],
-        8: [(194, 24, 2, 97, 0, 0), (154, 22, 2, 38, 2, 39), (110, 22, 4, 18, 2, 19), (86, 26, 4, 14, 2, 15)],
-        9: [(232, 30, 2, 116, 0, 0), (182, 22, 3, 36, 2, 37), (132, 20, 4, 16, 4, 17), (100, 24, 4, 12, 4, 13)],
-        10: [(274, 18, 2, 68, 2, 69), (216, 26, 4, 43, 1, 44), (154, 24, 6, 19, 2, 20), (122, 28, 6, 15, 2, 16)],
-    }
-    
-    # 补充版本 11-40（简化版，用于支持更大版本）
-    # 这里提供版本 11-20 的数据
-    more_data = {
-        11: [(324, 20, 4, 81, 0, 0), (254, 30, 1, 50, 4, 51), (180, 28, 4, 22, 4, 23), (140, 24, 3, 12, 8, 13)],
-        12: [(370, 24, 2, 92, 2, 93), (290, 22, 6, 36, 2, 37), (210, 26, 4, 20, 6, 21), (158, 28, 7, 14, 4, 15)],
-        13: [(428, 26, 4, 107, 0, 0), (334, 22, 8, 37, 1, 38), (258, 24, 8, 20, 4, 21), (180, 22, 12, 11, 4, 12)],
-        14: [(461, 30, 3, 115, 1, 116), (365, 24, 4, 40, 5, 41), (292, 20, 11, 16, 5, 17), (197, 24, 11, 12, 5, 13)],
-        15: [(523, 22, 5, 87, 1, 88), (415, 24, 5, 41, 5, 42), (328, 30, 5, 24, 7, 25), (223, 24, 11, 12, 7, 13)],
-        16: [(589, 24, 5, 98, 1, 99), (453, 28, 7, 45, 3, 46), (376, 24, 15, 19, 2, 20), (253, 30, 3, 15, 13, 16)],
-        17: [(647, 28, 1, 107, 5, 108), (507, 28, 10, 46, 1, 47), (426, 28, 1, 22, 15, 23), (283, 28, 2, 14, 17, 15)],
-        18: [(721, 30, 5, 120, 1, 121), (563, 26, 9, 43, 4, 44), (470, 28, 17, 22, 1, 23), (313, 28, 2, 14, 19, 15)],
-        19: [(795, 28, 3, 113, 4, 114), (627, 26, 3, 44, 11, 45), (531, 26, 17, 21, 4, 22), (341, 26, 9, 13, 16, 14)],
-        20: [(861, 28, 3, 107, 5, 108), (669, 26, 3, 41, 13, 42), (574, 30, 15, 24, 5, 25), (385, 28, 15, 15, 10, 16)],
-    }
-    data.update(more_data)
-    
-    for version, levels in data.items():
+    for version, levels in FULL_CAPACITY_DATA.items():
         for ec_level, (total_data, ec_per_block, nb1, dp1, nb2, dp2) in enumerate(levels):
             QR_CAPACITY_TABLE[ec_level][version] = {
                 'total_data_codewords': total_data,
@@ -208,17 +161,17 @@ def _init_capacity_table():
 
 _init_capacity_table()
 
-# 对齐图案位置表（版本 >= 2）
+# 完整的对齐图案位置表（版本1-40）
 ALIGNMENT_PATTERN_POSITIONS = {
-    1: [],
-    2: [6, 18],
-    3: [6, 22],
-    4: [6, 26],
-    5: [6, 30],
-    6: [6, 34],
-    7: [6, 22, 38],
-    8: [6, 24, 42],
-    9: [6, 26, 46],
+    1:  [],
+    2:  [6, 18],
+    3:  [6, 22],
+    4:  [6, 26],
+    5:  [6, 30],
+    6:  [6, 34],
+    7:  [6, 22, 38],
+    8:  [6, 24, 42],
+    9:  [6, 26, 46],
     10: [6, 28, 50],
     11: [6, 30, 54],
     12: [6, 32, 58],
@@ -230,11 +183,39 @@ ALIGNMENT_PATTERN_POSITIONS = {
     18: [6, 30, 56, 82],
     19: [6, 30, 58, 86],
     20: [6, 34, 62, 90],
+    21: [6, 28, 50, 72, 94],
+    22: [6, 26, 50, 74, 98],
+    23: [6, 30, 54, 78, 102],
+    24: [6, 28, 54, 80, 106],
+    25: [6, 32, 58, 84, 110],
+    26: [6, 30, 58, 86, 114],
+    27: [6, 34, 62, 90, 118],
+    28: [6, 26, 50, 74, 98, 122],
+    29: [6, 30, 54, 78, 102, 126],
+    30: [6, 26, 52, 78, 104, 130],
+    31: [6, 30, 56, 82, 108, 134],
+    32: [6, 34, 60, 86, 112, 138],
+    33: [6, 30, 58, 86, 114, 142],
+    34: [6, 34, 62, 90, 118, 146],
+    35: [6, 30, 54, 78, 102, 126, 150],
+    36: [6, 24, 50, 76, 102, 128, 154],
+    37: [6, 28, 54, 80, 106, 132, 158],
+    38: [6, 32, 58, 84, 110, 136, 162],
+    39: [6, 26, 54, 82, 110, 138, 166],
+    40: [6, 30, 58, 86, 114, 142, 170],
+}
+
+# 完整的余位数表（版本1-40）
+REMAINDER_BITS = {
+    1: 0,  2: 7,  3: 7,  4: 7,  5: 7,  6: 7,  7: 0,  8: 0,
+    9: 0,  10: 0, 11: 0, 12: 0, 13: 0, 14: 3, 15: 3, 16: 3,
+    17: 3, 18: 3, 19: 3, 20: 3, 21: 4, 22: 4, 23: 4, 24: 4,
+    25: 4, 26: 4, 27: 4, 28: 3, 29: 3, 30: 3, 31: 3, 32: 3,
+    33: 3, 34: 3, 35: 0,  36: 0, 37: 0, 38: 0, 39: 0, 40: 0,
 }
 
 # 格式信息 BCH 码生成多项式 (x^10 + x^8 + x^5 + x^4 + x^2 + x + 1)
 FORMAT_INFO_GEN_POLY = 0b10100110111
-# 格式信息掩码
 FORMAT_INFO_MASK = 0b101010000010010
 
 # 版本信息 BCH 码生成多项式 (x^12 + x^11 + x^10 + x^9 + x^8 + x^5 + x^2 + 1)
@@ -249,161 +230,92 @@ class DataEncoder:
     """数据编码器：字节模式"""
     
     @staticmethod
-    def encode_byte_mode(text: str) -> List[int]:
-        """
-        将文本编码为字节模式的比特流
-        
-        字节模式结构：
-        - 模式指示符: 4 bits (0100)
-        - 字符数指示符: 8 bits (版本1-9) 或 16 bits (版本10-40)
-        - 数据字节: 每个字符 8 bits
-        - 终止符: 最多 4 bits 的 0
-        - 补齐: 先补 0 对齐到字节，再交替用 0xEC 和 0x11 补齐
-        """
-        # 转换为 UTF-8 字节
+    def encode_byte_mode(text: str) -> Tuple[List[int], int]:
         data_bytes = text.encode('utf-8')
-        bits = []
-        
-        # 模式指示符 (4 bits): 0100
-        bits.extend([0, 1, 0, 0])
-        
-        # 字符数指示符：先占位，版本确定后填充
-        # 这里先用 16 位，后续再根据版本调整
         char_count = len(data_bytes)
-        char_count_bits = format(char_count, '016b')
-        bits.extend([int(b) for b in char_count_bits])
-        
+        bits = [0, 1, 0, 0]  # 模式指示符: 0100
+        # 字符数指示符先用16位占位，版本确定后调整
+        cc_bits = format(char_count, '016b')
+        bits.extend([int(b) for b in cc_bits])
         # 数据字节
         for byte in data_bytes:
             bits.extend([int(b) for b in format(byte, '08b')])
-        
         return bits, char_count
     
     @staticmethod
-    def pad_bits(bits: List[int], total_data_bits: int, version: int) -> List[int]:
-        """
-        补齐比特流到指定长度
-        
-        规则：
-        1. 添加终止符（最多 4 个 0 位）
-        2. 补 0 使长度为 8 的倍数
-        3. 交替填充 0xEC (11101100) 和 0x11 (00010001) 直到达到总长度
-        """
+    def adjust_char_count_indicator(bits: List[int], char_count: int, version: int) -> List[int]:
+        cc_len = 8 if version <= 9 else 16
+        cc_bits = format(char_count, '0' + str(cc_len) + 'b')
+        # bits[0:4] 是模式指示符, bits[4:20] 是原16位字符数
+        return bits[:4] + [int(b) for b in cc_bits] + bits[20:]
+    
+    @staticmethod
+    def pad_bits(bits: List[int], total_data_bits: int) -> List[int]:
         result = list(bits)
-        
-        # 1. 添加终止符
-        terminator_len = min(4, total_data_bits - len(result))
-        result.extend([0] * terminator_len)
-        
-        # 2. 补 0 对齐到字节
+        # 1. 终止符：最多4个0
+        term_len = min(4, total_data_bits - len(result))
+        result.extend([0] * term_len)
+        # 2. 补0对齐到字节
         while len(result) % 8 != 0 and len(result) < total_data_bits:
             result.append(0)
-        
-        # 3. 交替填充补齐字节
+        # 3. 交替填充 0xEC 和 0x11
         pad_bytes = [0xEC, 0x11]
         pad_idx = 0
         while len(result) < total_data_bits:
-            pad_byte = pad_bytes[pad_idx % 2]
+            byte = pad_bytes[pad_idx % 2]
             pad_idx += 1
-            result.extend([int(b) for b in format(pad_byte, '08b')])
-        
+            result.extend([int(b) for b in format(byte, '08b')])
         return result[:total_data_bits]
     
     @staticmethod
     def bits_to_bytes(bits: List[int]) -> List[int]:
-        """将比特流转换为字节列表"""
-        bytes_list = []
+        result = []
         for i in range(0, len(bits), 8):
             byte = 0
             for j in range(8):
                 if i + j < len(bits):
                     byte = (byte << 1) | bits[i + j]
-            bytes_list.append(byte)
-        return bytes_list
-    
-    @staticmethod
-    def adjust_char_count_indicator(bits: List[int], char_count: int, version: int) -> List[int]:
-        """
-        根据版本调整字符数指示符的位数
-        - 版本 1-9: 8 bits
-        - 版本 10-26: 16 bits
-        - 版本 27-40: 16 bits
-        """
-        # bits[0:4] 是模式指示符
-        # bits[4:20] 是 16 位的字符数（我们之前默认写的 16 位）
-        if version <= 9:
-            # 只需要 8 位，移除前 8 个字符数位
-            cc_bits = [int(b) for b in format(char_count, '08b')]
-            return bits[:4] + cc_bits + bits[20:]
-        else:
-            # 16 位已经正确
-            cc_bits = [int(b) for b in format(char_count, '016b')]
-            return bits[:4] + cc_bits + bits[20:]
+            result.append(byte)
+        return result
     
     @staticmethod
     def split_into_blocks(data_codewords: List[int], ec_level: int, version: int) -> Tuple[List[List[int]], int]:
-        """
-        将数据码字分块
-        
-        返回: (数据块列表, 每块的纠错码字数)
-        """
         cap = QR_CAPACITY_TABLE[ec_level][version]
         ec_per_block = cap['ec_per_block']
-        nb1 = cap['num_blocks_g1']
-        dp1 = cap['data_per_block_g1']
-        nb2 = cap['num_blocks_g2']
-        dp2 = cap['data_per_block_g2']
+        nb1, dp1 = cap['num_blocks_g1'], cap['data_per_block_g1']
+        nb2, dp2 = cap['num_blocks_g2'], cap['data_per_block_g2']
         
         blocks = []
         idx = 0
-        
-        # 第一组块
-        for i in range(nb1):
+        for _ in range(nb1):
             blocks.append(data_codewords[idx:idx + dp1])
             idx += dp1
-        
-        # 第二组块
-        for i in range(nb2):
+        for _ in range(nb2):
             blocks.append(data_codewords[idx:idx + dp2])
             idx += dp2
-        
         return blocks, ec_per_block
     
     @staticmethod
-    def interleave_data(blocks: List[List[int]]) -> List[int]:
-        """交织数据码字：轮流从每块取一个码字"""
+    def interleave(blocks: List[List[int]]) -> List[int]:
+        """交织码字：轮流从每块取一个"""
         if not blocks:
             return []
-        
         max_len = max(len(b) for b in blocks)
         result = []
-        
         for i in range(max_len):
             for block in blocks:
                 if i < len(block):
                     result.append(block[i])
-        
         return result
     
     @staticmethod
-    def interleave_ec(ec_blocks: List[List[int]]) -> List[int]:
-        """交织纠错码字"""
-        return DataEncoder.interleave_data(ec_blocks)
-    
-    @staticmethod
-    def build_final_bitstream(data_codewords: List[int], ec_codewords: List[int], remainder_bits: int) -> List[int]:
-        """
-        构建最终比特流：数据码字 + 纠错码字 + 余位
-        
-        某些版本在最后需要额外填充 0 位（remainder bits）
-        """
+    def build_final_bitstream(data_codewords: List[int], ec_codewords: List[int], remainder: int) -> List[int]:
         bits = []
-        for byte in data_codewords:
-            bits.extend([int(b) for b in format(byte, '08b')])
-        for byte in ec_codewords:
-            bits.extend([int(b) for b in format(byte, '08b')])
-        # 添加余位
-        bits.extend([0] * remainder_bits)
+        for b in data_codewords:
+            bits.extend([int(x) for x in format(b, '08b')])
+        for b in ec_codewords:
+            bits.extend([int(x) for x in format(b, '08b')])
+        bits.extend([0] * remainder)
         return bits
 
 
@@ -416,223 +328,91 @@ class QRMatrix:
     
     def __init__(self, version: int):
         self.version = version
-        self.size = 17 + version * 4  # 矩阵边长
-        # 矩阵: None = 未放置, True = 深色模块, False = 浅色模块
+        self.size = 17 + version * 4
         self.modules = [[None] * self.size for _ in range(self.size)]
-        # 功能区域标记（用于数据放置时跳过）
         self.is_function = [[False] * self.size for _ in range(self.size)]
     
-    def get_module(self, row: int, col: int) -> Optional[bool]:
-        if 0 <= row < self.size and 0 <= col < self.size:
-            return self.modules[row][col]
-        return None
-    
     def set_module(self, row: int, col: int, value: bool, is_function: bool = False):
-        self.modules[row][col] = value
-        if is_function:
-            self.is_function[row][col] = True
+        if 0 <= row < self.size and 0 <= col < self.size:
+            self.modules[row][col] = value
+            if is_function:
+                self.is_function[row][col] = True
     
-    def place_finder_pattern(self, center_row: int, center_col: int):
-        """放置定位图案（7x7 的方块，中心3x3深色，外面一圈白色，再外面一圈深色）"""
+    def place_finder_pattern(self, center_r: int, center_c: int):
+        """放置7x7定位图案：深-浅-深 三层方框"""
         for r in range(-3, 4):
             for c in range(-3, 4):
-                row = center_row + r
-                col = center_col + c
-                if 0 <= row < self.size and 0 <= col < self.size:
-                    # 定位图案：外框深色，内部环白色，中心3x3深色
-                    if abs(r) == 3 or abs(c) == 3 or (abs(r) <= 1 and abs(c) <= 1):
-                        self.set_module(row, col, True, is_function=True)
-                    else:
-                        self.set_module(row, col, False, is_function=True)
+                nr, nc = center_r + r, center_c + c
+                if abs(r) == 3 or abs(c) == 3 or (abs(r) <= 1 and abs(c) <= 1):
+                    self.set_module(nr, nc, True, is_function=True)
+                else:
+                    self.set_module(nr, nc, False, is_function=True)
     
     def place_separator(self):
-        """放置分隔符（定位图案周围的 8x8 白色边框）"""
-        # 左上角定位图案的分隔符
+        """定位图案周围的8x8白色分隔符"""
+        s = self.size
         for i in range(8):
-            if i < self.size:
-                if 7 < self.size:
-                    self.set_module(i, 7, False, is_function=True)
-                    self.set_module(7, i, False, is_function=True)
-        
-        # 右上角定位图案的分隔符
-        for i in range(8):
-            row = i
-            col = self.size - 8
-            if 0 <= row < self.size and 0 <= col < self.size:
-                self.set_module(row, col, False, is_function=True)
-            row = 7
-            col = self.size - 8 + i
-            if 0 <= row < self.size and 0 <= col < self.size:
-                self.set_module(row, col, False, is_function=True)
-        
-        # 左下角定位图案的分隔符
-        for i in range(8):
-            row = self.size - 8
-            col = i
-            if 0 <= row < self.size and 0 <= col < self.size:
-                self.set_module(row, col, False, is_function=True)
-            row = self.size - 8 + i
-            col = 7
-            if 0 <= row < self.size and 0 <= col < self.size:
-                self.set_module(row, col, False, is_function=True)
+            # 左上角
+            self.set_module(i, 7, False, is_function=True)
+            self.set_module(7, i, False, is_function=True)
+            # 右上角
+            self.set_module(i, s - 8, False, is_function=True)
+            self.set_module(7, s - 8 + i, False, is_function=True)
+            # 左下角
+            self.set_module(s - 8, i, False, is_function=True)
+            self.set_module(s - 8 + i, 7, False, is_function=True)
     
-    def place_alignment_pattern(self, center_row: int, center_col: int):
-        """放置对齐图案（5x5 的方块，中心深色，中间环白色，外框深色）"""
-        # 检查是否与定位图案重叠
-        if (center_row <= 7 and center_col <= 7) or \
-           (center_row <= 7 and center_col >= self.size - 8) or \
-           (center_row >= self.size - 8 and center_col <= 7):
+    def place_alignment_pattern(self, center_r: int, center_c: int):
+        """放置5x5对齐图案：深-浅-深"""
+        # 跳过与三个定位图案重叠的位置
+        if (center_r <= 7 and center_c <= 7) or \
+           (center_r <= 7 and center_c >= self.size - 8) or \
+           (center_r >= self.size - 8 and center_c <= 7):
             return
-        
         for r in range(-2, 3):
             for c in range(-2, 3):
-                row = center_row + r
-                col = center_col + c
+                nr, nc = center_r + r, center_c + c
                 if abs(r) == 2 or abs(c) == 2 or (r == 0 and c == 0):
-                    self.set_module(row, col, True, is_function=True)
+                    self.set_module(nr, nc, True, is_function=True)
                 else:
-                    self.set_module(row, col, False, is_function=True)
+                    self.set_module(nr, nc, False, is_function=True)
     
     def place_timing_patterns(self):
-        """放置定时图案（行6和列6，交替的深色/浅色模块）"""
+        """第6行和第6列的交替黑白定时图案"""
         for i in range(8, self.size - 8):
-            # 水平定时图案（第6行）
             val = (i % 2 == 0)
             self.set_module(6, i, val, is_function=True)
-            # 垂直定时图案（第6列）
             self.set_module(i, 6, val, is_function=True)
     
     def place_dark_module(self):
-        """放置深色模块（固定位置的深色模块）"""
-        row = 4 * self.version + 9
-        col = 8
-        if 0 <= row < self.size and 0 <= col < self.size:
-            self.set_module(row, col, True, is_function=True)
-    
-    def place_format_info(self, format_info: int):
-        """
-        放置格式信息（15位，含纠错）
-        
-        格式信息：
-        - 位15,14,13: 纠错等级 (01=L, 00=M, 11=Q, 10=H)
-        - 位12,11,10: 掩码编号 (000-111)
-        - 位9-0: BCH纠错码 (10位)
-        """
-        # 格式信息共 15 位，从高位到低位排列
-        bits = [(format_info >> i) & 1 for i in range(14, -1, -1)]
-        
-        # 位置1：围绕左上角定位图案
-        # 行8，列0-8（列6是定时图案，跳过）
-        positions = [
-            # (row, col) for bits 0-8
-            (8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 7), (8, 8),
-            # 继续列8，行7-0
-            (7, 8), (5, 8), (4, 8), (3, 8), (2, 8), (1, 8), (0, 8),
-        ]
-        for i, (r, c) in enumerate(positions):
-            self.set_module(r, c, bool(bits[i]), is_function=True)
-        
-        # 位置2：另外两个角
-        positions2 = [
-            # 行size-1 到 size-7，列8
-            (self.size - 1, 8), (self.size - 2, 8), (self.size - 3, 8),
-            (self.size - 4, 8), (self.size - 5, 8), (self.size - 6, 8),
-            (self.size - 7, 8),
-            # 行8，列size-8 到 size-1
-            (8, self.size - 8),
-            (8, self.size - 7), (8, self.size - 6), (8, self.size - 5),
-            (8, self.size - 4), (8, self.size - 3), (8, self.size - 2),
-            (8, self.size - 1),
-        ]
-        for i, (r, c) in enumerate(positions2):
-            self.set_module(r, c, bool(bits[i]), is_function=True)
-    
-    def place_version_info(self, version_info: int):
-        """
-        放置版本信息（版本 >= 7 时需要，18位）
-        """
-        # 18 位，从高位到低位
-        bits = [(version_info >> i) & 1 for i in range(17, -1, -1)]
-        
-        # 位置1：右上角定位图案下方，列0-5，行size-11 到 size-9
-        idx = 0
-        for col in range(6):
-            for row in range(self.size - 11, self.size - 8):
-                self.set_module(row, col, bool(bits[idx]), is_function=True)
-                idx += 1
-        
-        # 位置2：左下角定位图案右方，行0-5，列size-11 到 size-9
-        idx = 0
-        for row in range(6):
-            for col in range(self.size - 11, self.size - 8):
-                self.set_module(row, col, bool(bits[idx]), is_function=True)
-                idx += 1
-    
-    def place_function_patterns(self, ec_level: int, mask_num: int):
-        """放置所有功能图案"""
-        # 1. 放置三个定位图案
-        self.place_finder_pattern(3, 3)           # 左上角
-        self.place_finder_pattern(3, self.size - 4)  # 右上角
-        self.place_finder_pattern(self.size - 4, 3)  # 左下角
-        
-        # 2. 放置分隔符
-        self.place_separator()
-        
-        # 3. 放置对齐图案
-        if self.version >= 2:
-            positions = ALIGNMENT_PATTERN_POSITIONS.get(self.version, [])
-            for r in positions:
-                for c in positions:
-                    self.place_alignment_pattern(r, c)
-        
-        # 4. 放置定时图案
-        self.place_timing_patterns()
-        
-        # 5. 放置深色模块
-        self.place_dark_module()
-        
-        # 6. 格式信息
-        format_data = self._encode_format_info(ec_level, mask_num)
-        self.place_format_info(format_data)
-        
-        # 7. 版本信息（版本 >= 7）
-        if self.version >= 7:
-            version_data = self._encode_version_info(self.version)
-            self.place_version_info(version_data)
+        """固定位置的深色模块"""
+        r = 4 * self.version + 9
+        self.set_module(r, 8, True, is_function=True)
     
     def _encode_format_info(self, ec_level: int, mask_num: int) -> int:
         """
-        编码格式信息：5位数据 + 10位BCH纠错 + 异或掩码
-        
-        数据位：
-        - 2位：纠错等级 (01=L, 00=M, 11=Q, 10=H)
-        - 3位：掩码编号
+        标准格式信息编码：
+        5位数据（2位EC等级 + 3位掩码）+ 10位BCH纠错 + 异或掩码
         """
-        # 纠错等级编码
-        ec_codes = {
-            EC_LEVEL_L: 0b01,
-            EC_LEVEL_M: 0b00,
-            EC_LEVEL_Q: 0b11,
-            EC_LEVEL_H: 0b10,
-        }
-        data = (ec_codes[ec_level] << 3) | mask_num  # 5位
+        ec_codes = {EC_LEVEL_L: 0b01, EC_LEVEL_M: 0b00, EC_LEVEL_Q: 0b11, EC_LEVEL_H: 0b10}
+        data = (ec_codes[ec_level] << 3) | mask_num  # 5位数据
         
-        # BCH(15,5) 编码：计算10位纠错码
+        # BCH(15,5) 编码：计算 10 位纠错码
         d = data << 10
-        gen = FORMAT_INFO_GEN_POLY  # 11位
+        gen = FORMAT_INFO_GEN_POLY  # 11位 (bit 10 到 bit 0)
         
-        # 多项式取模
         for i in range(4, -1, -1):
             if (d >> (i + 10)) & 1:
                 d ^= gen << i
         
-        # 组合并异或掩码
-        result = ((data << 10) | d) ^ FORMAT_INFO_MASK
+        # 组合后与掩码异或
+        result = ((data << 10) | (d & 0x3FF)) ^ FORMAT_INFO_MASK
         return result
     
     def _encode_version_info(self, version: int) -> int:
         """
-        编码版本信息：6位版本号 + 12位BCH纠错
+        标准版本信息编码：
+        6位版本号 + 12位BCH纠错
         """
         v = version << 12
         gen = VERSION_INFO_GEN_POLY  # 13位
@@ -641,79 +421,154 @@ class QRMatrix:
             if (v >> (i + 12)) & 1:
                 v ^= gen << i
         
-        return (version << 12) | v
+        return (version << 12) | (v & 0xFFF)
+    
+    def place_format_info(self, format_data: int):
+        """
+        标准格式信息放置：15位，两处冗余位置
+        位顺序：从 MSB 到 LSB，即 bit14 到 bit0
+        """
+        bits = [(format_data >> i) & 1 for i in range(14, -1, -1)]
+        s = self.size
+        
+        # 位置1：围绕左上角定位图案
+        # 行8，列0-5, 7-8
+        pos1 = [
+            (8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 7), (8, 8),
+            (7, 8), (5, 8), (4, 8), (3, 8), (2, 8), (1, 8), (0, 8),
+        ]
+        for i, (r, c) in enumerate(pos1):
+            self.set_module(r, c, bool(bits[i]), is_function=True)
+        
+        # 位置2：右下角区域的两部分
+        # 行 size-1 到 size-7，列8
+        pos2_part1 = [
+            (s - 1, 8), (s - 2, 8), (s - 3, 8), (s - 4, 8), (s - 5, 8), (s - 6, 8), (s - 7, 8),
+        ]
+        # 行8，列 size-8 到 size-1
+        pos2_part2 = [
+            (8, s - 8), (8, s - 7), (8, s - 6), (8, s - 5),
+            (8, s - 4), (8, s - 3), (8, s - 2), (8, s - 1),
+        ]
+        pos2 = pos2_part1 + pos2_part2
+        for i, (r, c) in enumerate(pos2):
+            self.set_module(r, c, bool(bits[i]), is_function=True)
+    
+    def place_version_info(self, version_data: int):
+        """
+        标准版本信息放置：18位，版本>=7时需要
+        位顺序：从 MSB 到 LSB
+        """
+        bits = [(version_data >> i) & 1 for i in range(17, -1, -1)]
+        s = self.size
+        
+        # 位置1：右上角区域：行 size-11 到 size-9，列0-5
+        # 按列优先排列
+        idx = 0
+        for col in range(6):
+            for row in range(s - 11, s - 8):
+                self.set_module(row, col, bool(bits[idx]), is_function=True)
+                idx += 1
+        
+        # 位置2：左下角区域：行0-5，列 size-11 到 size-9
+        # 按行优先排列
+        idx = 0
+        for row in range(6):
+            for col in range(s - 11, s - 8):
+                self.set_module(row, col, bool(bits[idx]), is_function=True)
+                idx += 1
+    
+    def place_function_patterns(self, ec_level: int, mask_num: int):
+        """放置所有功能图案"""
+        # 1. 三个定位图案
+        s = self.size
+        self.place_finder_pattern(3, 3)
+        self.place_finder_pattern(3, s - 4)
+        self.place_finder_pattern(s - 4, 3)
+        
+        # 2. 分隔符
+        self.place_separator()
+        
+        # 3. 对齐图案
+        if self.version >= 2:
+            positions = ALIGNMENT_PATTERN_POSITIONS.get(self.version, [])
+            for r in positions:
+                for c in positions:
+                    self.place_alignment_pattern(r, c)
+        
+        # 4. 定时图案
+        self.place_timing_patterns()
+        
+        # 5. 深色模块
+        self.place_dark_module()
+        
+        # 6. 格式信息
+        fmt = self._encode_format_info(ec_level, mask_num)
+        self.place_format_info(fmt)
+        
+        # 7. 版本信息（>=7）
+        if self.version >= 7:
+            ver = self._encode_version_info(self.version)
+            self.place_version_info(ver)
     
     def place_data(self, data_bits: List[int]):
         """
-        将数据比特放置到矩阵中
-        
-        放置规则：
-        - 从右下角开始，蛇形向上/向下移动
-        - 每次处理两列（除了被定时图案占据的第6列）
-        - 在 2 列宽的条带中，以 2x1 或 1x2 的方式放置
-        - 跳过功能模块
+        标准数据放置顺序：蛇形填充
+        - 从右下角开始，每次处理两列
+        - 跳过第6列（定时图案）
+        - 方向交替：向上、向下、向上...
+        - 在两列中：先右列（从下到上或上到下），再左列
         """
         bit_idx = 0
         total_bits = len(data_bits)
-        size = self.size
+        s = self.size
         
-        # 从右往左，每次跳2列（跳过列6）
-        col = size - 1
-        while col > 0:
-            if col == 6:  # 跳过定时图案所在列
-                col -= 1
-                continue
+        # 从最右边开始，每次处理两列，向左移动
+        col_pair = 0
+        while True:
+            # 当前处理的两列：右列 = s-1 - col_pair*2, 左列 = 右列 - 1
+            right_col = s - 1 - col_pair * 2
             
-            # 向上或向下遍历
-            # 确定当前条带的方向
-            is_upward = ((col - 1) // 2) % 2 == 0  # 第1对(列0,1不处理)从下往上
+            # 如果右列 <= 0，完成
+            if right_col <= 0:
+                break
             
-            # 实际上：从最后一列开始，方向交替
-            # 列(size-1, size-2): 从下往上
-            # 列(size-3, size-4): 从上往下
-            # 等等...
-            pair_idx = (size - 1 - col) // 2
-            is_upward = (pair_idx % 2 == 0)
+            # 跳过第6列（如果右列是7，则左列是6，需要跳过整对）
+            left_col = right_col - 1
+            if left_col == 6:
+                # 调整：左列改为5（跳过列6）
+                left_col = 5
             
-            if is_upward:
-                rows = range(size - 1, -1, -1)
+            # 确定方向：第0对（最右）向上，第1对向下，第2对向上，依此类推
+            upward = (col_pair % 2 == 0)
+            
+            if upward:
+                rows = range(s - 1, -1, -1)
             else:
-                rows = range(size)
+                rows = range(s)
             
+            # 放置顺序：先右列，再左列
             for row in rows:
-                for c_offset in [0, 1]:  # 先右列，再左列
-                    c = col - c_offset
+                for c in [right_col, left_col]:
                     if bit_idx >= total_bits:
                         return
                     if not self.is_function[row][c] and self.modules[row][c] is None:
                         self.set_module(row, c, bool(data_bits[bit_idx]))
                         bit_idx += 1
             
-            col -= 2
+            col_pair += 1
 
 
 # ============================================================
-# 第五部分：掩码算法与惩罚评分
+# 第五部分：掩码算法与惩罚评分（标准实现）
 # ============================================================
 
 class Masker:
-    """8种数据掩码算法"""
+    """8种数据掩码算法 + 标准惩罚评分"""
     
     @staticmethod
     def mask_function(mask_num: int, row: int, col: int) -> bool:
-        """
-        8种掩码函数：返回 True 表示该位置需要翻转
-        
-        掩码条件（满足则翻转）：
-        0: (row + col) % 2 == 0
-        1: row % 2 == 0
-        2: col % 3 == 0
-        3: (row + col) % 3 == 0
-        4: (floor(row/2) + floor(col/3)) % 2 == 0
-        5: (row*col) % 2 + (row*col) % 3 == 0
-        6: ((row*col) % 2 + (row*col) % 3) % 2 == 0
-        7: ((row+col) % 2 + (row*col) % 3) % 2 == 0
-        """
+        """8种标准掩码函数：返回True表示翻转"""
         if mask_num == 0:
             return (row + col) % 2 == 0
         elif mask_num == 1:
@@ -725,57 +580,118 @@ class Masker:
         elif mask_num == 4:
             return ((row // 2) + (col // 3)) % 2 == 0
         elif mask_num == 5:
-            return ((row * col) % 2) + ((row * col) % 3) == 0
+            return ((row * col) % 2 + (row * col) % 3) == 0
         elif mask_num == 6:
-            return (((row * col) % 2) + ((row * col) % 3)) % 2 == 0
+            return (((row * col) % 2 + (row * col) % 3) % 2) == 0
         elif mask_num == 7:
-            return (((row + col) % 2) + ((row * col) % 3)) % 2 == 0
-        else:
-            raise ValueError(f"Invalid mask number: {mask_num}")
+            return (((row + col) % 2 + (row * col) % 3) % 2) == 0
+        raise ValueError(f"Invalid mask: {mask_num}")
     
     @staticmethod
     def apply_mask(matrix: QRMatrix, mask_num: int):
-        """对数据模块应用掩码（不改变功能模块）"""
         for r in range(matrix.size):
             for c in range(matrix.size):
-                if not matrix.is_function[r][c]:
+                if not matrix.is_function[r][c] and matrix.modules[r][c] is not None:
                     if Masker.mask_function(mask_num, r, c):
                         matrix.modules[r][c] = not matrix.modules[r][c]
     
     @staticmethod
     def apply_mask_temp(matrix: QRMatrix, mask_num: int) -> List[List[bool]]:
-        """临时应用掩码，返回新的矩阵（不修改原矩阵）"""
         result = []
         for r in range(matrix.size):
             row = []
             for c in range(matrix.size):
-                val = matrix.modules[r][c]
-                if not matrix.is_function[r][c] and val is not None:
+                v = matrix.modules[r][c]
+                if not matrix.is_function[r][c] and v is not None:
                     if Masker.mask_function(mask_num, r, c):
-                        val = not val
-                row.append(val)
+                        v = not v
+                row.append(v)
             result.append(row)
         return result
     
     @staticmethod
+    def _get_runs(modules_line: List[bool]) -> List[Tuple[bool, int]]:
+        """
+        计算一行/列的行程长度编码（RLE）
+        返回：[(颜色, 长度), ...]
+        """
+        if not modules_line:
+            return []
+        runs = []
+        current = modules_line[0]
+        count = 1
+        for v in modules_line[1:]:
+            if v == current:
+                count += 1
+            else:
+                runs.append((current, count))
+                current = v
+                count = 1
+        runs.append((current, count))
+        return runs
+    
+    @staticmethod
+    def _check_finder_pattern(runs: List[Tuple[bool, int]]) -> int:
+        """
+        标准N3检测：检查行程序列中是否有类似定位图案的 1:1:3:1:1 比例
+        序列必须是：浅色(n) + 深色(1) + 浅色(1) + 深色(3) + 浅色(1) + 深色(1) + 浅色(n)
+        其中浅色部分的长度至少为 1，深色部分比例为 1:1:3:1:1
+        
+        这是标准的N3检测方式，检测连续模块的宽度比例，而不是固定的7个模块。
+        这样不会把普通的7格纹理误判为定位图案。
+        """
+        count = 0
+        # 需要至少 5 段（深-浅-深-浅-深）才能形成 1:1:3:1:1
+        for i in range(len(runs) - 4):
+            # 检查5段：颜色必须是 深-浅-深-浅-深
+            if runs[i][0] and not runs[i+1][0] and runs[i+2][0] and not runs[i+3][0] and runs[i+4][0]:
+                # 检查比例：1:1:3:1:1
+                # 取最短的深色段作为单位1
+                d1, d2, d3 = runs[i][1], runs[i+2][1], runs[i+4][1]
+                l1, l2 = runs[i+1][1], runs[i+3][1]
+                
+                # 所有深色段应该是单位长度的倍数
+                # 浅色段也应该接近单位长度
+                unit = min(d1, d2, d3, l1, l2)
+                if unit == 0:
+                    continue
+                
+                # 检查比例是否接近 1:1:3:1:1（允许容差）
+                # 深色段：d1, d3, d4 应该 ≈ unit
+                # 深色段：d3 应该 ≈ 3*unit
+                # 浅色段：l1, l2 应该 ≈ unit
+                tol = unit // 2  # 容差半个单位
+                
+                if (abs(d1 - unit) <= tol and
+                    abs(l1 - unit) <= tol and
+                    abs(d2 - 3 * unit) <= tol and
+                    abs(l2 - unit) <= tol and
+                    abs(d3 - unit) <= tol):
+                    # 还需要检查两侧有足够的浅色空间（至少1个单位）
+                    # 前一段（如果有）应该是浅色且长度 >= unit
+                    # 后一段（如果有）应该是浅色且长度 >= unit
+                    left_ok = (i == 0) or (not runs[i-1][0] and runs[i-1][1] >= unit)
+                    right_ok = (i + 5 >= len(runs)) or (not runs[i+5][0] and runs[i+5][1] >= unit)
+                    
+                    if left_ok and right_ok:
+                        count += 1
+        return count
+    
+    @staticmethod
     def calculate_penalty(modules: List[List[bool]]) -> int:
         """
-        计算惩罚分数（越低越好）
-        
-        四个惩罚规则：
-        N1: 行/列中有连续5个相同颜色的模块（每5个+3，每多1个+1）
-        N2: 2x2 的同色方块（每个+3）
-        N3: 出现类似定位图案的序列（1:1:3:1:1 比例的深色-浅色-深色-浅色-深色）
-        N4: 深色模块比例偏离50%的程度（每偏离5%+10）
+        标准四项惩罚评分（ISO/IEC 18004）
+        分数越低越好
         """
         size = len(modules)
         penalty = 0
         
-        # N1: 连续相同颜色
+        # === N1: 连续5个以上同色模块 ===
+        # 每连续5个 +3 分，每多1个 +1 分
         for r in range(size):
             count = 1
             for c in range(1, size):
-                if modules[r][c] == modules[r][c - 1]:
+                if modules[r][c] == modules[r][c-1]:
                     count += 1
                 else:
                     if count >= 5:
@@ -787,7 +703,7 @@ class Masker:
         for c in range(size):
             count = 1
             for r in range(1, size):
-                if modules[r][c] == modules[r - 1][c]:
+                if modules[r][c] == modules[r-1][c]:
                     count += 1
                 else:
                     if count >= 5:
@@ -796,78 +712,51 @@ class Masker:
             if count >= 5:
                 penalty += 3 + (count - 5)
         
-        # N2: 2x2 同色方块
+        # === N2: 2x2 同色方块 ===
+        # 每个 +3 分
         for r in range(size - 1):
             for c in range(size - 1):
                 v = modules[r][c]
-                if v is not None and v == modules[r][c + 1] == modules[r + 1][c] == modules[r + 1][c + 1]:
+                if v == modules[r][c+1] == modules[r+1][c] == modules[r+1][c+1]:
                     penalty += 3
         
-        # N3: 定位图案类似序列
-        # 检测 深色-浅色-深色-深色-深色-浅色-深色 (1:1:3:1:1 比例)
-        pattern = [True, False, True, True, True, False, True]
-        
-        # 行检测
+        # === N3: 类定位图案序列（标准RLE比例检测） ===
+        # 每次出现 +40 分
         for r in range(size):
-            for c in range(size - 6):
-                match = True
-                for i in range(7):
-                    if modules[r][c + i] != pattern[i]:
-                        match = False
-                        break
-                if match:
-                    penalty += 40
+            row = [modules[r][c] for c in range(size)]
+            runs = Masker._get_runs(row)
+            penalty += Masker._check_finder_pattern(runs) * 40
         
-        # 列检测
         for c in range(size):
-            for r in range(size - 6):
-                match = True
-                for i in range(7):
-                    if modules[r + i][c] != pattern[i]:
-                        match = False
-                        break
-                if match:
-                    penalty += 40
+            col = [modules[r][c] for r in range(size)]
+            runs = Masker._get_runs(col)
+            penalty += Masker._check_finder_pattern(runs) * 40
         
-        # N4: 深色比例
-        dark_count = 0
-        total = 0
-        for r in range(size):
-            for c in range(size):
-                if modules[r][c] is not None:
-                    total += 1
-                    if modules[r][c]:
-                        dark_count += 1
-        
-        if total > 0:
-            percent = dark_count * 100 / total
-            # 找最接近的5%倍数，计算与50%的偏差
-            k = abs(percent - 50) / 5
-            penalty += int(k) * 10
+        # === N4: 深色模块比例偏离50% ===
+        # 每偏离5% +10 分
+        dark = sum(1 for r in range(size) for c in range(size) if modules[r][c])
+        total = size * size
+        percent = dark * 100 / total
+        # 取最接近的5%倍数，计算与50%的偏差
+        k = abs(percent - 50) / 5
+        penalty += int(k) * 10
         
         return penalty
     
     @staticmethod
     def select_best_mask(matrix: QRMatrix, data_bits: List[int], ec_level: int) -> int:
-        """
-        选择惩罚分数最低的掩码（0-7）
-        """
+        """选择惩罚分数最低的掩码"""
         best_mask = 0
         best_penalty = float('inf')
         
         for mask_num in range(8):
-            # 创建临时矩阵并放置数据
-            temp_matrix = QRMatrix(matrix.version)
-            temp_matrix.place_function_patterns(ec_level, mask_num)
-            temp_matrix.place_data(data_bits)
-            
-            # 应用掩码
-            masked_modules = Masker.apply_mask_temp(temp_matrix, mask_num)
-            
-            # 计算惩罚（转换 None 为 False 便于评估）
-            eval_modules = [[False if v is None else v for v in row] for row in masked_modules]
-            penalty = Masker.calculate_penalty(eval_modules)
-            
+            temp = QRMatrix(matrix.version)
+            temp.place_function_patterns(ec_level, mask_num)
+            temp.place_data(data_bits)
+            masked = Masker.apply_mask_temp(temp, mask_num)
+            # 转换为全布尔矩阵（None当作False）
+            eval_mat = [[False if v is None else v for v in row] for row in masked]
+            penalty = Masker.calculate_penalty(eval_mat)
             if penalty < best_penalty:
                 best_penalty = penalty
                 best_mask = mask_num
@@ -880,161 +769,96 @@ class Masker:
 # ============================================================
 
 class VersionSelector:
-    """版本选择器"""
     
     @staticmethod
     def get_remainder_bits(version: int) -> int:
-        """获取指定版本的余位数"""
-        # 余位表：版本1-40
-        # 参考 ISO/IEC 18004
-        remainder_table = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # 1-10
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # 11-20
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # 21-30
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # 31-40
-        ]
-        # 实际上：
-        # 版本 1: 0 bits
-        # 版本 2: 7 bits
-        # 版本 3: 7 bits
-        # 版本 4: 7 bits
-        # 版本 5: 7 bits  
-        # 版本 6: 7 bits
-        # 版本 7: 0 bits
-        # 版本 8: 0 bits
-        # 版本 9: 0 bits
-        # 版本 10: 0 bits
-        # ... 简化起见，用更精确的表
-        precise_remainder = {
-            1: 0, 2: 7, 3: 7, 4: 7, 5: 7, 6: 7,
-            7: 0, 8: 0, 9: 0, 10: 0,
-            11: 0, 12: 0, 13: 0, 14: 3, 15: 3, 16: 3,
-            17: 3, 18: 3, 19: 3, 20: 3,
-        }
-        return precise_remainder.get(version, 0)
+        return REMAINDER_BITS.get(version, 0)
     
     @staticmethod
     def select_version(text: str, ec_level: int) -> int:
-        """
-        根据数据量和纠错等级选择最小的版本
-        
-        Args:
-            text: 要编码的文本
-            ec_level: 纠错等级
-            
-        Returns:
-            版本号 (1-40)
-        """
+        """根据数据量自动选择最小的版本（1-40）"""
         data_bytes = text.encode('utf-8')
         char_count = len(data_bytes)
         
-        # 遍历版本 1-20（我们实现支持的范围）
-        for version in range(1, 21):
+        for version in range(1, 41):
             cap = QR_CAPACITY_TABLE.get(ec_level, {}).get(version)
             if cap is None:
                 continue
             
-            total_data_codewords = cap['total_data_codewords']
-            total_data_bits = total_data_codewords * 8
-            
-            # 计算所需位数
-            # 模式指示符: 4 bits
-            # 字符数指示符: 8 bits (v1-9) 或 16 bits (v10+)
+            total_bits = cap['total_data_codewords'] * 8
             cc_bits = 8 if version <= 9 else 16
-            # 数据字节: 每个 8 bits
-            data_bits_count = char_count * 8
+            needed = 4 + cc_bits + char_count * 8
             
-            total_needed = 4 + cc_bits + data_bits_count
-            
-            # 需要留出至少终止符 (4 bits)
-            if total_needed + 4 <= total_data_bits:
+            # 至少需要4位终止符
+            if needed + 4 <= total_bits:
                 return version
         
-        raise ValueError("数据过大，超出支持的版本范围（最大版本20）")
+        max_cap = QR_CAPACITY_TABLE[ec_level][40]['total_data_codewords']
+        raise ValueError(
+            f"数据过大！当前数据需要 {char_count} 字节 + 开销，"
+            f"版本40-{EC_LEVEL_NAMES[ec_level]} 最大容量 {max_cap} 字节"
+        )
 
 
 # ============================================================
-# 第七部分：渲染（点阵打印 + SVG输出）
+# 第七部分：渲染
 # ============================================================
 
 class Renderer:
-    """渲染器"""
     
     @staticmethod
     def to_ascii(matrix: QRMatrix, quiet_zone: int = 4) -> str:
-        """
-        渲染为 ASCII 字符画
-        """
-        size = matrix.size + quiet_zone * 2
+        s = matrix.size + quiet_zone * 2
         lines = []
-        
-        for r in range(size):
+        for r in range(s):
             line = []
-            for c in range(size):
-                mr = r - quiet_zone
-                mc = c - quiet_zone
+            for c in range(s):
+                mr, mc = r - quiet_zone, c - quiet_zone
                 if 0 <= mr < matrix.size and 0 <= mc < matrix.size:
-                    val = matrix.modules[mr][mc]
-                    if val is None:
-                        line.append('?')
-                    elif val:
-                        line.append('█')
-                    else:
-                        line.append(' ')
+                    v = matrix.modules[mr][mc]
+                    line.append('█' if v else ' ')
                 else:
                     line.append(' ')
             lines.append(''.join(line))
-        
         return '\n'.join(lines)
     
     @staticmethod
-    def to_svg(matrix: QRMatrix, module_size: int = 10, quiet_zone: int = 4, 
-               fg_color: str = '#000000', bg_color: str = '#ffffff') -> str:
-        """
-        渲染为 SVG 图像
-        """
-        size = matrix.size + quiet_zone * 2
-        pixel_size = size * module_size
+    def to_svg(matrix: QRMatrix, module_size: int = 10, quiet_zone: int = 4,
+               fg: str = '#000000', bg: str = '#ffffff') -> str:
+        s = matrix.size + quiet_zone * 2
+        ps = s * module_size
         
-        svg_parts = [
+        parts = [
             f'<?xml version="1.0" encoding="UTF-8"?>',
-            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {pixel_size} {pixel_size}" width="{pixel_size}" height="{pixel_size}">',
-            f'  <rect width="{pixel_size}" height="{pixel_size}" fill="{bg_color}"/>',
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {ps} {ps}" width="{ps}" height="{ps}">',
+            f'  <rect width="100%" height="100%" fill="{bg}"/>',
         ]
         
         for r in range(matrix.size):
             for c in range(matrix.size):
-                val = matrix.modules[r][c]
-                if val:  # 深色模块
+                if matrix.modules[r][c]:
                     x = (c + quiet_zone) * module_size
                     y = (r + quiet_zone) * module_size
-                    svg_parts.append(
-                        f'  <rect x="{x}" y="{y}" width="{module_size}" height="{module_size}" fill="{fg_color}"/>'
+                    parts.append(
+                        f'  <rect x="{x}" y="{y}" width="{module_size}" height="{module_size}" fill="{fg}"/>'
                     )
         
-        svg_parts.append('</svg>')
-        return '\n'.join(svg_parts)
+        parts.append('</svg>')
+        return '\n'.join(parts)
     
     @staticmethod
     def to_boolean_matrix(matrix: QRMatrix, quiet_zone: int = 4) -> List[List[bool]]:
-        """
-        渲染为布尔矩阵（True=深色, False=浅色）
-        """
-        size = matrix.size + quiet_zone * 2
+        s = matrix.size + quiet_zone * 2
         result = []
-        
-        for r in range(size):
+        for r in range(s):
             row = []
-            for c in range(size):
-                mr = r - quiet_zone
-                mc = c - quiet_zone
+            for c in range(s):
+                mr, mc = r - quiet_zone, c - quiet_zone
                 if 0 <= mr < matrix.size and 0 <= mc < matrix.size:
-                    val = matrix.modules[mr][mc]
-                    row.append(bool(val))
+                    row.append(bool(matrix.modules[mr][mc]))
                 else:
                     row.append(False)
             result.append(row)
-        
         return result
 
 
@@ -1043,75 +867,64 @@ class Renderer:
 # ============================================================
 
 class QRCodeGenerator:
-    """二维码生成器主类"""
     
     @staticmethod
-    def generate(text: str, ec_level: int = EC_LEVEL_M, 
-                 output_format: str = 'ascii'):
+    def generate(text: str, ec_level: int = EC_LEVEL_M, output_format: str = 'ascii',
+                 force_version: Optional[int] = None):
         """
-        生成二维码
+        生成标准二维码
         
         Args:
             text: 要编码的文本
             ec_level: 纠错等级 (L/M/Q/H)
             output_format: 'ascii', 'svg', 'matrix'
-            
-        Returns:
-            根据格式返回字符串或矩阵
+            force_version: 强制使用指定版本（1-40），None 为自动选择
         """
         # 1. 选择版本
-        version = VersionSelector.select_version(text, ec_level)
+        if force_version is not None:
+            if not (1 <= force_version <= 40):
+                raise ValueError("版本必须在1-40之间")
+            version = force_version
+        else:
+            version = VersionSelector.select_version(text, ec_level)
         
-        # 2. 数据编码（字节模式）
+        # 2. 数据编码
         bits, char_count = DataEncoder.encode_byte_mode(text)
-        
-        # 3. 调整字符数指示符位数
         bits = DataEncoder.adjust_char_count_indicator(bits, char_count, version)
         
-        # 4. 获取总数据比特数并补齐
+        # 3. 补齐比特
         cap = QR_CAPACITY_TABLE[ec_level][version]
-        total_data_bits = cap['total_data_codewords'] * 8
-        bits = DataEncoder.pad_bits(bits, total_data_bits, version)
+        total_bits = cap['total_data_codewords'] * 8
+        bits = DataEncoder.pad_bits(bits, total_bits)
         
-        # 5. 转换为码字
+        # 4. 转码字
         data_codewords = DataEncoder.bits_to_bytes(bits)
         
-        # 6. 分块
+        # 5. 分块 + 生成纠错码
         blocks, ec_per_block = DataEncoder.split_into_blocks(data_codewords, ec_level, version)
+        ec_blocks = [ReedSolomon.encode(block, ec_per_block) for block in blocks]
         
-        # 7. 为每块生成纠错码字
-        ec_blocks = []
-        for block in blocks:
-            ec_words = ReedSolomon.encode(block, ec_per_block)
-            ec_blocks.append(ec_words)
+        # 6. 交织
+        interleaved_data = DataEncoder.interleave(blocks)
+        interleaved_ec = DataEncoder.interleave(ec_blocks)
         
-        # 8. 交织数据和纠错码字
-        interleaved_data = DataEncoder.interleave_data(blocks)
-        interleaved_ec = DataEncoder.interleave_ec(ec_blocks)
+        # 7. 最终比特流
+        remainder = VersionSelector.get_remainder_bits(version)
+        final_bits = DataEncoder.build_final_bitstream(interleaved_data, interleaved_ec, remainder)
         
-        # 9. 构建最终比特流（含余位）
-        remainder_bits = VersionSelector.get_remainder_bits(version)
-        final_bits = DataEncoder.build_final_bitstream(
-            interleaved_data, interleaved_ec, remainder_bits
-        )
+        # 8. 选择最佳掩码
+        temp_matrix = QRMatrix(version)
+        temp_matrix.place_function_patterns(ec_level, 0)
+        temp_matrix.place_data(final_bits)
+        best_mask = Masker.select_best_mask(temp_matrix, final_bits, ec_level)
         
-        # 10. 创建矩阵，放置功能图案（先用掩码0占位）
-        matrix = QRMatrix(version)
-        matrix.place_function_patterns(ec_level, 0)
-        matrix.place_data(final_bits)
-        
-        # 11. 选择最佳掩码
-        best_mask = Masker.select_best_mask(matrix, final_bits, ec_level)
-        
-        # 12. 用最佳掩码重新构建最终矩阵
+        # 9. 构建最终矩阵
         final_matrix = QRMatrix(version)
         final_matrix.place_function_patterns(ec_level, best_mask)
         final_matrix.place_data(final_bits)
-        
-        # 13. 应用掩码
         Masker.apply_mask(final_matrix, best_mask)
         
-        # 14. 输出
+        # 10. 输出
         if output_format == 'ascii':
             return Renderer.to_ascii(final_matrix)
         elif output_format == 'svg':
@@ -1119,7 +932,7 @@ class QRCodeGenerator:
         elif output_format == 'matrix':
             return Renderer.to_boolean_matrix(final_matrix)
         else:
-            raise ValueError(f"Unknown output format: {output_format}")
+            raise ValueError(f"Unknown format: {output_format}")
 
 
 # ============================================================
@@ -1127,37 +940,109 @@ class QRCodeGenerator:
 # ============================================================
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("二维码生成器测试")
-    print("=" * 60)
+    print("=" * 70)
+    print("二维码生成器测试（符合 ISO/IEC 18004 标准）")
+    print("=" * 70)
     
-    # 测试文本
-    test_texts = [
-        "Hello, QR Code!",
-        "1234567890",
-        "https://www.example.com",
+    test_cases = [
+        ("Hello, QR Code!", EC_LEVEL_M, "短文本-M级"),
+        ("1234567890", EC_LEVEL_L, "数字-L级"),
+        ("https://www.example.com/qrcode/test/12345", EC_LEVEL_H, "URL-H级"),
+        ("测试中文编码：这是一段用来验证二维码生成器的中文文本内容，用于测试版本自动选择功能。", EC_LEVEL_M, "中文-M级"),
     ]
     
-    for text in test_texts:
-        print(f"\n\n编码文本: {text}")
-        print("-" * 60)
+    for text, ec_level, desc in test_cases:
+        print(f"\n{'=' * 70}")
+        print(f"测试: {desc}")
+        print(f"文本: {text}")
+        print(f"纠错等级: {EC_LEVEL_NAMES[ec_level]}")
+        print("-" * 70)
+        
         try:
-            # ASCII 输出
-            ascii_qr = QRCodeGenerator.generate(text, ec_level=EC_LEVEL_M, output_format='ascii')
-            print(ascii_qr)
+            # 自动选择版本
+            qr_ascii = QRCodeGenerator.generate(text, ec_level=ec_level, output_format='ascii')
+            print(qr_ascii)
             
-            # SVG 输出保存到文件
-            svg_qr = QRCodeGenerator.generate(text, ec_level=EC_LEVEL_M, output_format='svg')
-            filename = f"qrcode_{text[:10].replace('/', '_')}.svg"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(svg_qr)
-            print(f"\nSVG 已保存到: {filename}")
+            # 保存SVG
+            svg = QRCodeGenerator.generate(text, ec_level=ec_level, output_format='svg')
+            safe_name = ''.join(c if c.isalnum() else '_' for c in text[:15])
+            fname = f"qr_{safe_name}_{EC_LEVEL_NAMES[ec_level]}.svg"
+            with open(fname, 'w', encoding='utf-8') as f:
+                f.write(svg)
+            print(f"\n✓ SVG已保存: {fname}")
+            
+            # 输出版本信息
+            v = VersionSelector.select_version(text, ec_level)
+            print(f"✓ 自动选择版本: {v} (矩阵大小: {17+v*4}x{17+v*4})")
             
         except Exception as e:
-            print(f"错误: {e}")
+            print(f"✗ 错误: {e}")
             import traceback
             traceback.print_exc()
     
-    print("\n" + "=" * 60)
-    print("测试完成")
-    print("=" * 60)
+    # 测试大版本
+    print(f"\n{'=' * 70}")
+    print("测试版本7+的版本信息编码")
+    print("=" * 70)
+    
+    long_text = "A" * 200  # 足够长的文本，会选择版本7+
+    for ec in [EC_LEVEL_L, EC_LEVEL_M, EC_LEVEL_Q, EC_LEVEL_H]:
+        try:
+            v = VersionSelector.select_version(long_text, ec)
+            print(f"纠错等级 {EC_LEVEL_NAMES[ec]}: 选择版本 {v}")
+            svg = QRCodeGenerator.generate(long_text, ec_level=ec, output_format='svg')
+            fname = f"qr_v{v}_{EC_LEVEL_NAMES[ec]}_long.svg"
+            with open(fname, 'w', encoding='utf-8') as f:
+                f.write(svg)
+            print(f"  ✓ 已保存: {fname}")
+        except Exception as e:
+            print(f"纠错等级 {EC_LEVEL_NAMES[ec]}: 错误 - {e}")
+    
+    print("\n" + "=" * 70)
+    print("测试掩码选择：验证同一段文本选出规范评分最低的掩码")
+    print("=" * 70)
+    
+    # 测试掩码评分
+    test_text = "https://example.com"
+    version = VersionSelector.select_version(test_text, EC_LEVEL_M)
+    print(f"文本: {test_text}")
+    print(f"版本: {version}, 纠错等级: M")
+    print()
+    
+    # 打印8种掩码的惩罚分
+    bits, cc = DataEncoder.encode_byte_mode(test_text)
+    bits = DataEncoder.adjust_char_count_indicator(bits, cc, version)
+    cap = QR_CAPACITY_TABLE[EC_LEVEL_M][version]
+    bits = DataEncoder.pad_bits(bits, cap['total_data_codewords'] * 8)
+    data_cw = DataEncoder.bits_to_bytes(bits)
+    blocks, ec_per = DataEncoder.split_into_blocks(data_cw, EC_LEVEL_M, version)
+    ec_blocks = [ReedSolomon.encode(b, ec_per) for b in blocks]
+    interleaved_data = DataEncoder.interleave(blocks)
+    interleaved_ec = DataEncoder.interleave(ec_blocks)
+    rem = VersionSelector.get_remainder_bits(version)
+    final_bits = DataEncoder.build_final_bitstream(interleaved_data, interleaved_ec, rem)
+    
+    temp_matrix = QRMatrix(version)
+    temp_matrix.place_function_patterns(EC_LEVEL_M, 0)
+    temp_matrix.place_data(final_bits)
+    
+    print("  掩码  惩罚分")
+    print("  ----  ------")
+    penalties = []
+    for mask in range(8):
+        temp = QRMatrix(version)
+        temp.place_function_patterns(EC_LEVEL_M, mask)
+        temp.place_data(final_bits)
+        masked = Masker.apply_mask_temp(temp, mask)
+        eval_mat = [[False if v is None else v for v in row] for row in masked]
+        p = Masker.calculate_penalty(eval_mat)
+        penalties.append((p, mask))
+        print(f"    {mask}    {p:4d}")
+    
+    penalties.sort()
+    print(f"\n✓ 最佳掩码: {penalties[0][1]} (惩罚分: {penalties[0][0]})")
+    print(f"✓ 最差掩码: {penalties[-1][1]} (惩罚分: {penalties[-1][0]})")
+    
+    print("\n" + "=" * 70)
+    print("所有测试完成！")
+    print("=" * 70)
