@@ -384,10 +384,12 @@ class QRMatrix:
             self.set_module(6, i, val, is_function=True)
             self.set_module(i, 6, val, is_function=True)
     
-    def place_dark_module(self):
-        """固定位置的深色模块"""
+    def place_dark_module(self, test: bool = False):
+        """固定位置的深色模块
+        test=True时为白色（用于掩码评分）
+        """
         r = 4 * self.version + 9
-        self.set_module(r, 8, True, is_function=True)
+        self.set_module(r, 8, not test, is_function=True)
     
     def _encode_format_info(self, ec_level: int, mask_num: int) -> int:
         """
@@ -423,63 +425,87 @@ class QRMatrix:
         
         return (version << 12) | (v & 0xFFF)
     
-    def place_format_info(self, format_data: int):
+    def place_format_info(self, format_data: int, test: bool = False):
         """
         标准格式信息放置：15位，两处冗余位置
-        位顺序：从 MSB 到 LSB，即 bit14 到 bit0
+        
+        位顺序：bit 14 (MSB) 到 bit 0 (LSB)
+          bit 14-13: 纠错等级
+          bit 12-10: 掩码编号
+          bit 9-0:  BCH纠错码
+        
+        位置1（左上角周围）：
+          行8列0 → bit14, 行8列1 → bit13, ..., 行8列5 → bit9
+          行8列7 → bit8, 行8列8 → bit7
+          列8行7 → bit6, 列8行5 → bit5, ..., 列8行0 → bit0
+        
+        位置2（右下角周围）：
+          列8行size-7 → bit8, 列8行size-6 → bit9, ..., 列8行size-1 → bit14
+          行8列size-8 → bit7, 行8列size-7 → bit6, ..., 行8列size-1 → bit0
+          
+        test=True时，所有位都是白色（用于掩码评分）
         """
-        bits = [(format_data >> i) & 1 for i in range(14, -1, -1)]
+        if test:
+            bits = [0] * 15
+        else:
+            bits = [(format_data >> i) & 1 for i in range(14, -1, -1)]
         s = self.size
         
-        # 位置1：围绕左上角定位图案
-        # 行8，列0-5, 7-8
+        # 位置1：左上角周围（bit 14 → bit 0 顺序）
         pos1 = [
-            (8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 7), (8, 8),
-            (7, 8), (5, 8), (4, 8), (3, 8), (2, 8), (1, 8), (0, 8),
+            (8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5),  # bit 14-9
+            (8, 7), (8, 8),                                    # bit 8-7
+            (7, 8), (5, 8), (4, 8), (3, 8), (2, 8), (1, 8), (0, 8),  # bit 6-0
         ]
         for i, (r, c) in enumerate(pos1):
             self.set_module(r, c, bool(bits[i]), is_function=True)
         
-        # 位置2：右下角区域的两部分
-        # 行 size-1 到 size-7，列8
-        pos2_part1 = [
-            (s - 1, 8), (s - 2, 8), (s - 3, 8), (s - 4, 8), (s - 5, 8), (s - 6, 8), (s - 7, 8),
-        ]
-        # 行8，列 size-8 到 size-1
-        pos2_part2 = [
-            (8, s - 8), (8, s - 7), (8, s - 6), (8, s - 5),
-            (8, s - 4), (8, s - 3), (8, s - 2), (8, s - 1),
-        ]
-        pos2 = pos2_part1 + pos2_part2
-        for i, (r, c) in enumerate(pos2):
-            self.set_module(r, c, bool(bits[i]), is_function=True)
+        # 位置2：右下角周围
+        # bits[0] = bit 14, bits[1] = bit 13, ..., bits[14] = bit 0
+        # 列8部分（从上到下：行s-7到s-1）：bit 8, 9, 10, 11, 12, 13, 14
+        #   即 bits[6], bits[5], bits[4], bits[3], bits[2], bits[1], bits[0]
+        for i in range(7):
+            r = s - 7 + i
+            self.set_module(r, 8, bool(bits[6 - i]), is_function=True)
+        
+        # 行8部分（从左到右：列s-8到s-1）：bit 7, 6, 5, 4, 3, 2, 1, 0
+        #   即 bits[7], bits[8], bits[9], bits[10], bits[11], bits[12], bits[13], bits[14]
+        for i in range(8):
+            c = s - 8 + i
+            self.set_module(8, c, bool(bits[7 + i]), is_function=True)
     
-    def place_version_info(self, version_data: int):
+    def place_version_info(self, version_data: int, test: bool = False):
         """
         标准版本信息放置：18位，版本>=7时需要
-        位顺序：从 MSB 到 LSB
+        位顺序：从 LSB 到 MSB (bit 0 到 bit 17)
+        test=True时，所有位都是白色（用于掩码评分）
         """
-        bits = [(version_data >> i) & 1 for i in range(17, -1, -1)]
+        if test:
+            bits = [0] * 18
+        else:
+            bits = [(version_data >> i) & 1 for i in range(18)]
         s = self.size
         
-        # 位置1：右上角区域：行 size-11 到 size-9，列0-5
-        # 按列优先排列
-        idx = 0
-        for col in range(6):
-            for row in range(s - 11, s - 8):
-                self.set_module(row, col, bool(bits[idx]), is_function=True)
-                idx += 1
-        
-        # 位置2：左下角区域：行0-5，列 size-11 到 size-9
+        # 位置1：右上角区域：行0-5，列 size-11 到 size-9
         # 按行优先排列
         idx = 0
         for row in range(6):
             for col in range(s - 11, s - 8):
                 self.set_module(row, col, bool(bits[idx]), is_function=True)
                 idx += 1
+        
+        # 位置2：左下角区域：行 size-11 到 size-9，列0-5
+        # 按列优先排列
+        idx = 0
+        for col in range(6):
+            for row in range(s - 11, s - 8):
+                self.set_module(row, col, bool(bits[idx]), is_function=True)
+                idx += 1
     
-    def place_function_patterns(self, ec_level: int, mask_num: int):
-        """放置所有功能图案"""
+    def place_function_patterns(self, ec_level: int, mask_num: int, test: bool = False):
+        """放置所有功能图案
+        test=True时，格式信息和版本信息用白色代替（用于掩码评分）
+        """
         # 1. 三个定位图案
         s = self.size
         self.place_finder_pattern(3, 3)
@@ -500,16 +526,16 @@ class QRMatrix:
         self.place_timing_patterns()
         
         # 5. 深色模块
-        self.place_dark_module()
+        self.place_dark_module(test=test)
         
         # 6. 格式信息
         fmt = self._encode_format_info(ec_level, mask_num)
-        self.place_format_info(fmt)
+        self.place_format_info(fmt, test=test)
         
         # 7. 版本信息（>=7）
         if self.version >= 7:
             ver = self._encode_version_info(self.version)
-            self.place_version_info(ver)
+            self.place_version_info(ver, test=test)
     
     def place_data(self, data_bits: List[int]):
         """
@@ -523,20 +549,13 @@ class QRMatrix:
         total_bits = len(data_bits)
         s = self.size
         
-        # 从最右边开始，每次处理两列，向左移动
+        right_col = s - 1
         col_pair = 0
-        while True:
-            # 当前处理的两列：右列 = s-1 - col_pair*2, 左列 = 右列 - 1
-            right_col = s - 1 - col_pair * 2
-            
-            # 如果右列 <= 0，完成
-            if right_col <= 0:
-                break
-            
-            # 跳过第6列（如果右列是7，则左列是6，需要跳过整对）
+        
+        while right_col >= 0:
+            # 左列 = 右列 - 1，如果左列是6则跳过（改为5）
             left_col = right_col - 1
             if left_col == 6:
-                # 调整：左列改为5（跳过列6）
                 left_col = 5
             
             # 确定方向：第0对（最右）向上，第1对向下，第2对向上，依此类推
@@ -552,10 +571,15 @@ class QRMatrix:
                 for c in [right_col, left_col]:
                     if bit_idx >= total_bits:
                         return
-                    if not self.is_function[row][c] and self.modules[row][c] is None:
+                    if c >= 0 and not self.is_function[row][c] and self.modules[row][c] is None:
                         self.set_module(row, c, bool(data_bits[bit_idx]))
                         bit_idx += 1
             
+            # 下一个右列 = 当前左列 - 1
+            right_col = left_col - 1
+            # 如果下一个右列是6，跳过
+            if right_col == 6:
+                right_col = 5
             col_pair += 1
 
 
@@ -631,50 +655,51 @@ class Masker:
         return runs
     
     @staticmethod
-    def _check_finder_pattern(runs: List[Tuple[bool, int]]) -> int:
+    def _check_finder_pattern_line(line: List[bool]) -> int:
         """
-        标准N3检测：检查行程序列中是否有类似定位图案的 1:1:3:1:1 比例
-        序列必须是：浅色(n) + 深色(1) + 浅色(1) + 深色(3) + 浅色(1) + 深色(1) + 浅色(n)
-        其中浅色部分的长度至少为 1，深色部分比例为 1:1:3:1:1
-        
-        这是标准的N3检测方式，检测连续模块的宽度比例，而不是固定的7个模块。
-        这样不会把普通的7格纹理误判为定位图案。
+        标准N3检测：检查一行/列中是否有类似定位图案的11模块模式
+        两种模式：
+          pattern1: 10111010000 (深-浅-深-深-深-浅-深-浅-浅-浅-浅)
+          pattern2: 00001011101 (浅-浅-浅-浅-深-浅-深-深-深-浅-深)
+        即 1:1:3:1:1 比例的深色序列，一侧有至少4个浅色模块
         """
         count = 0
-        # 需要至少 5 段（深-浅-深-浅-深）才能形成 1:1:3:1:1
-        for i in range(len(runs) - 4):
-            # 检查5段：颜色必须是 深-浅-深-浅-深
-            if runs[i][0] and not runs[i+1][0] and runs[i+2][0] and not runs[i+3][0] and runs[i+4][0]:
-                # 检查比例：1:1:3:1:1
-                # 取最短的深色段作为单位1
-                d1, d2, d3 = runs[i][1], runs[i+2][1], runs[i+4][1]
-                l1, l2 = runs[i+1][1], runs[i+3][1]
+        n = len(line)
+        
+        for i in range(n - 10):
+            # 先检查公共的关键点
+            # 位置1, 4, 5, 6, 9 必须是: 浅, 深, 浅, 深, 浅
+            if (not line[i + 1] and
+                line[i + 4] and
+                not line[i + 5] and
+                line[i + 6] and
+                not line[i + 9]):
                 
-                # 所有深色段应该是单位长度的倍数
-                # 浅色段也应该接近单位长度
-                unit = min(d1, d2, d3, l1, l2)
-                if unit == 0:
-                    continue
+                # pattern1: 深-浅-深-深-深-浅-深-浅-浅-浅-浅
+                #   右侧有4个浅色
+                pattern1 = (
+                    line[i + 0] and
+                    line[i + 2] and
+                    line[i + 3] and
+                    not line[i + 7] and
+                    not line[i + 8] and
+                    not line[i + 10]
+                )
                 
-                # 检查比例是否接近 1:1:3:1:1（允许容差）
-                # 深色段：d1, d3, d4 应该 ≈ unit
-                # 深色段：d3 应该 ≈ 3*unit
-                # 浅色段：l1, l2 应该 ≈ unit
-                tol = unit // 2  # 容差半个单位
+                # pattern2: 浅-浅-浅-浅-深-浅-深-深-深-浅-深
+                #   左侧有4个浅色
+                pattern2 = (
+                    not line[i + 0] and
+                    not line[i + 2] and
+                    not line[i + 3] and
+                    line[i + 7] and
+                    line[i + 8] and
+                    line[i + 10]
+                )
                 
-                if (abs(d1 - unit) <= tol and
-                    abs(l1 - unit) <= tol and
-                    abs(d2 - 3 * unit) <= tol and
-                    abs(l2 - unit) <= tol and
-                    abs(d3 - unit) <= tol):
-                    # 还需要检查两侧有足够的浅色空间（至少1个单位）
-                    # 前一段（如果有）应该是浅色且长度 >= unit
-                    # 后一段（如果有）应该是浅色且长度 >= unit
-                    left_ok = (i == 0) or (not runs[i-1][0] and runs[i-1][1] >= unit)
-                    right_ok = (i + 5 >= len(runs)) or (not runs[i+5][0] and runs[i+5][1] >= unit)
-                    
-                    if left_ok and right_ok:
-                        count += 1
+                if pattern1 or pattern2:
+                    count += 1
+        
         return count
     
     @staticmethod
@@ -720,17 +745,16 @@ class Masker:
                 if v == modules[r][c+1] == modules[r+1][c] == modules[r+1][c+1]:
                     penalty += 3
         
-        # === N3: 类定位图案序列（标准RLE比例检测） ===
+        # === N3: 类定位图案序列 ===
+        # 检测 1:1:3:1:1 比例且一侧有4个浅色的模式
         # 每次出现 +40 分
         for r in range(size):
             row = [modules[r][c] for c in range(size)]
-            runs = Masker._get_runs(row)
-            penalty += Masker._check_finder_pattern(runs) * 40
+            penalty += Masker._check_finder_pattern_line(row) * 40
         
         for c in range(size):
             col = [modules[r][c] for r in range(size)]
-            runs = Masker._get_runs(col)
-            penalty += Masker._check_finder_pattern(runs) * 40
+            penalty += Masker._check_finder_pattern_line(col) * 40
         
         # === N4: 深色模块比例偏离50% ===
         # 每偏离5% +10 分
@@ -745,13 +769,15 @@ class Masker:
     
     @staticmethod
     def select_best_mask(matrix: QRMatrix, data_bits: List[int], ec_level: int) -> int:
-        """选择惩罚分数最低的掩码"""
+        """选择惩罚分数最低的掩码
+        使用test模式：格式信息和版本信息用白色代替，避免影响评分
+        """
         best_mask = 0
         best_penalty = float('inf')
         
         for mask_num in range(8):
             temp = QRMatrix(matrix.version)
-            temp.place_function_patterns(ec_level, mask_num)
+            temp.place_function_patterns(ec_level, mask_num, test=True)
             temp.place_data(data_bits)
             masked = Masker.apply_mask_temp(temp, mask_num)
             # 转换为全布尔矩阵（None当作False）
