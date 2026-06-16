@@ -6,7 +6,7 @@
 """
 
 import math
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 # ============================================================
 # 第一部分：GF(256) 有限域运算 + 里德-所罗门纠错码
@@ -801,28 +801,50 @@ class VersionSelector:
         return REMAINDER_BITS.get(version, 0)
     
     @staticmethod
+    def get_data_byte_count(text: str) -> int:
+        """获取文本编码后的字节数（UTF-8）"""
+        return len(text.encode('utf-8'))
+    
+    @staticmethod
+    def get_max_data_bytes(version: int, ec_level: int) -> int:
+        """获取指定版本和纠错等级下，字节模式最多能容纳的数据字节数"""
+        cap = QR_CAPACITY_TABLE.get(ec_level, {}).get(version)
+        if cap is None:
+            return 0
+        total_bits = cap['total_data_codewords'] * 8
+        cc_bits = 8 if version <= 9 else 16
+        # 4位模式指示符 + cc_bits字符数指示 + 4位终止符 + 字节数据
+        # 可容纳字节数 = (total_bits - 4 - cc_bits - 4) // 8
+        available_bits = total_bits - 4 - cc_bits - 4
+        if available_bits < 0:
+            return 0
+        return available_bits // 8
+    
+    @staticmethod
+    def check_capacity(text: str, version: int, ec_level: int) -> Tuple[bool, int, int]:
+        """
+        检查指定版本和纠错等级能否容纳文本
+        Returns: (是否足够, 实际需要字节数, 最大可容纳字节数)
+        """
+        needed = VersionSelector.get_data_byte_count(text)
+        max_bytes = VersionSelector.get_max_data_bytes(version, ec_level)
+        return (needed <= max_bytes, needed, max_bytes)
+    
+    @staticmethod
     def select_version(text: str, ec_level: int) -> int:
         """根据数据量自动选择最小的版本（1-40）"""
         data_bytes = text.encode('utf-8')
         char_count = len(data_bytes)
         
         for version in range(1, 41):
-            cap = QR_CAPACITY_TABLE.get(ec_level, {}).get(version)
-            if cap is None:
-                continue
-            
-            total_bits = cap['total_data_codewords'] * 8
-            cc_bits = 8 if version <= 9 else 16
-            needed = 4 + cc_bits + char_count * 8
-            
-            # 至少需要4位终止符
-            if needed + 4 <= total_bits:
+            ok, _, _ = VersionSelector.check_capacity(text, version, ec_level)
+            if ok:
                 return version
         
-        max_cap = QR_CAPACITY_TABLE[ec_level][40]['total_data_codewords']
+        max_cap = VersionSelector.get_max_data_bytes(40, ec_level)
         raise ValueError(
-            f"数据过大！当前数据需要 {char_count} 字节 + 开销，"
-            f"版本40-{EC_LEVEL_NAMES[ec_level]} 最大容量 {max_cap} 字节"
+            f"数据过大！当前数据 {char_count} 字节，"
+            f"版本40-{EC_LEVEL_NAMES[ec_level]} 最多容纳 {max_cap} 字节"
         )
 
 
@@ -895,21 +917,53 @@ class Renderer:
 class QRCodeGenerator:
     
     @staticmethod
-    def generate(text: str, ec_level: int = EC_LEVEL_M, output_format: str = 'ascii',
-                 force_version: Optional[int] = None):
+    def generate_with_metadata(text: str, ec_level: int = EC_LEVEL_M,
+                                output_format: str = 'ascii',
+                                force_version: Optional[int] = None
+                                ) -> Tuple[Any, Dict[str, Any]]:
         """
-        生成标准二维码
+        生成标准二维码并附带元数据
         
         Args:
             text: 要编码的文本
             ec_level: 纠错等级 (L/M/Q/H)
             output_format: 'ascii', 'svg', 'matrix'
             force_version: 强制使用指定版本（1-40），None 为自动选择
+        
+        Returns:
+            (output, metadata) 元数据包含: version, ec_level, mask, matrix_size,
+            content_bytes, char_count, output_format
+        
+        Raises:
+            ValueError: 当 force_version 指定的版本容量不足时，
+                        或文本超出版本40最大容量时
         """
         # 1. 选择版本
         if force_version is not None:
             if not (1 <= force_version <= 40):
                 raise ValueError("版本必须在1-40之间")
+            ok, needed, max_bytes = VersionSelector.check_capacity(text, force_version, ec_level)
+            if not ok:
+                min_version = None
+                for v in range(force_version + 1, 41):
+                    v_ok, _, _ = VersionSelector.check_capacity(text, v, ec_level)
+                    if v_ok:
+                        min_version = v
+                        break
+                if min_version is not None:
+                    raise ValueError(
+                        f"指定版本{force_version}-{EC_LEVEL_NAMES[ec_level]}容量不足："
+                        f"当前内容需要 {needed} 字节，"
+                        f"该版本最多容纳 {max_bytes} 字节，"
+                        f"至少需要版本 {min_version}"
+                    )
+                else:
+                    raise ValueError(
+                        f"指定版本{force_version}-{EC_LEVEL_NAMES[ec_level]}容量不足，"
+                        f"且内容超出版本40最大容量："
+                        f"当前内容需要 {needed} 字节，"
+                        f"该版本最多容纳 {max_bytes} 字节"
+                    )
             version = force_version
         else:
             version = VersionSelector.select_version(text, ec_level)
@@ -917,6 +971,7 @@ class QRCodeGenerator:
         # 2. 数据编码
         bits, char_count = DataEncoder.encode_byte_mode(text)
         bits = DataEncoder.adjust_char_count_indicator(bits, char_count, version)
+        content_bytes = char_count
         
         # 3. 补齐比特
         cap = QR_CAPACITY_TABLE[ec_level][version]
@@ -950,15 +1005,53 @@ class QRCodeGenerator:
         final_matrix.place_data(final_bits)
         Masker.apply_mask(final_matrix, best_mask)
         
+        matrix_size = final_matrix.size  # 不含静区的实际二维码尺寸
+        
         # 10. 输出
         if output_format == 'ascii':
-            return Renderer.to_ascii(final_matrix)
+            output = Renderer.to_ascii(final_matrix)
         elif output_format == 'svg':
-            return Renderer.to_svg(final_matrix)
+            output = Renderer.to_svg(final_matrix)
         elif output_format == 'matrix':
-            return Renderer.to_boolean_matrix(final_matrix)
+            output = Renderer.to_boolean_matrix(final_matrix)
         else:
             raise ValueError(f"Unknown format: {output_format}")
+        
+        metadata = {
+            'version': version,
+            'ec_level': ec_level,
+            'ec_level_name': EC_LEVEL_NAMES[ec_level],
+            'mask': best_mask,
+            'matrix_size': matrix_size,  # 不含静区
+            'output_size': len(output) if isinstance(output, list) else None,  # matrix格式: 含静区
+            'content_bytes': content_bytes,
+            'char_count': len(text),
+            'output_format': output_format,
+            'text': text,
+        }
+        
+        return output, metadata
+    
+    @staticmethod
+    def generate(text: str, ec_level: int = EC_LEVEL_M, output_format: str = 'ascii',
+                 force_version: Optional[int] = None):
+        """
+        生成标准二维码
+        
+        Args:
+            text: 要编码的文本
+            ec_level: 纠错等级 (L/M/Q/H)
+            output_format: 'ascii', 'svg', 'matrix'
+            force_version: 强制使用指定版本（1-40），None 为自动选择
+        
+        Raises:
+            ValueError: 当 force_version 指定的版本容量不足时，
+                        或文本超出版本40最大容量时
+        """
+        output, _ = QRCodeGenerator.generate_with_metadata(
+            text, ec_level, output_format, force_version
+        )
+        return output
 
 
 # ============================================================

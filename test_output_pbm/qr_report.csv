@@ -1,0 +1,6 @@
+﻿index,text,filename,success,error,version,ec_level,ec_level_name,mask,matrix_size,content_bytes,char_count,selfcheck_passed,selfcheck_diff,selfcheck_note
+0,First item - Hello,0001_First_item_-_Hello.pbm,True,,2,2,Q,6,25,18,18,True,0,与标准库完全一致
+1,第二个内容-中文测试,0002_第二个内容-中文测试.pbm,True,,3,2,Q,4,29,28,10,True,0,与标准库完全一致
+2,https://github.com/test?q=123,0003_https_github.com_test_q=123.pbm,True,,3,2,Q,0,29,29,29,True,0,与标准库完全一致
+3,Fourth 第四项 mixed content,0004_Fourth_第四项_mixed_content.pbm,True,,3,2,Q,4,29,30,24,True,0,与标准库完全一致
+4,"第五项,带逗号的内容","0005_第五项,带逗号的内容.pbm",True,,3,2,Q,5,29,28,10,True,0,与标准库完全一致

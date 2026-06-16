@@ -1,0 +1,2 @@
+﻿index,text,filename,success,error,version,ec_level,ec_level_name,mask,matrix_size,content_bytes,char_count,selfcheck_passed,selfcheck_diff,selfcheck_note
+0,这是一段很长的中文内容，用来测试强制版本不足时的错误处理。版本1-M最多只能容纳十几个字节，这个内容绝对放不下。,,False,指定版本1-M容量不足：当前内容需要 162 字节，该版本最多容纳 14 字节，至少需要版本 9,0,1,M,-1,0,0,56,,-1,

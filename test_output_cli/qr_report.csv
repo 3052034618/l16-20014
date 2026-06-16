@@ -1,0 +1,4 @@
+﻿index,text,filename,success,error,version,ec_level,ec_level_name,mask,matrix_size,content_bytes,char_count,selfcheck_passed,selfcheck_diff,selfcheck_note
+0,Hello,0001.svg,True,,1,1,M,2,21,5,5,True,0,与标准库完全一致
+1,你好世界,0002.svg,True,,1,1,M,2,21,12,4,True,0,与标准库完全一致
+2,https://example.com,0003.svg,True,,2,1,M,5,25,19,19,True,0,与标准库完全一致

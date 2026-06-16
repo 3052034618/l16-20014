@@ -1,0 +1,6 @@
+﻿index,text,filename,success,error,version,ec_level,ec_level_name,mask,matrix_size,content_bytes,char_count,selfcheck_passed,selfcheck_diff,selfcheck_note
+0,Hello World,0001_Hello_World.svg,True,,1,1,M,0,21,11,11,True,0,与标准库完全一致
+1,你好世界测试中文,0002_你好世界测试中文.svg,True,,2,1,M,3,25,24,8,True,0,与标准库完全一致
+2,https://www.example.com/test/query?id=123&name=test,0003_https_www.example.com_test_que.svg,True,,4,1,M,2,33,51,51,True,0,与标准库完全一致
+3,二维码生成器批量测试,0004_二维码生成器批量测试.svg,True,,3,1,M,4,29,30,10,True,0,与标准库完全一致
+4,Batch QR Code Generator Test,0005_Batch_QR_Code_Generator_Test.svg,True,,3,1,M,3,29,28,28,True,0,与标准库完全一致

@@ -1,0 +1,69 @@
+{
+  "generated_at": "2026-06-17T04:48:23",
+  "summary": {
+    "generated_at": "2026-06-17T04:48:23",
+    "output_dir": "D:\\trae-bz\\TraeProjects\\20014\\test_output_cli",
+    "output_format": "svg",
+    "ec_level": "M",
+    "force_version": null,
+    "total": 3,
+    "success": 3,
+    "failed": 0,
+    "selfcheck_enabled": true,
+    "selfcheck_total": 3,
+    "selfcheck_passed": 3
+  },
+  "items": [
+    {
+      "index": 0,
+      "text": "Hello",
+      "filename": "0001.svg",
+      "success": true,
+      "error": "",
+      "version": 1,
+      "ec_level": 1,
+      "ec_level_name": "M",
+      "mask": 2,
+      "matrix_size": 21,
+      "content_bytes": 5,
+      "char_count": 5,
+      "selfcheck_passed": true,
+      "selfcheck_diff": 0,
+      "selfcheck_note": "与标准库完全一致"
+    },
+    {
+      "index": 1,
+      "text": "你好世界",
+      "filename": "0002.svg",
+      "success": true,
+      "error": "",
+      "version": 1,
+      "ec_level": 1,
+      "ec_level_name": "M",
+      "mask": 2,
+      "matrix_size": 21,
+      "content_bytes": 12,
+      "char_count": 4,
+      "selfcheck_passed": true,
+      "selfcheck_diff": 0,
+      "selfcheck_note": "与标准库完全一致"
+    },
+    {
+      "index": 2,
+      "text": "https://example.com",
+      "filename": "0003.svg",
+      "success": true,
+      "error": "",
+      "version": 2,
+      "ec_level": 1,
+      "ec_level_name": "M",
+      "mask": 5,
+      "matrix_size": 25,
+      "content_bytes": 19,
+      "char_count": 19,
+      "selfcheck_passed": true,
+      "selfcheck_diff": 0,
+      "selfcheck_note": "与标准库完全一致"
+    }
+  ]
+}

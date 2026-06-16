@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-06-17T04:47:25",
+  "summary": {
+    "generated_at": "2026-06-17T04:47:25",
+    "output_dir": "D:\\trae-bz\\TraeProjects\\20014\\test_output_forcev",
+    "output_format": "svg",
+    "ec_level": "M",
+    "force_version": 1,
+    "total": 1,
+    "success": 0,
+    "failed": 1,
+    "selfcheck_enabled": false,
+    "selfcheck_total": 0,
+    "selfcheck_passed": 0
+  },
+  "items": [
+    {
+      "index": 0,
+      "text": "这是一段很长的中文内容，用来测试强制版本不足时的错误处理。版本1-M最多只能容纳十几个字节，这个内容绝对放不下。",
+      "filename": "",
+      "success": false,
+      "error": "指定版本1-M容量不足：当前内容需要 162 字节，该版本最多容纳 14 字节，至少需要版本 9",
+      "version": 0,
+      "ec_level": 1,
+      "ec_level_name": "M",
+      "mask": -1,
+      "matrix_size": 0,
+      "content_bytes": 0,
+      "char_count": 56,
+      "selfcheck_passed": null,
+      "selfcheck_diff": -1,
+      "selfcheck_note": ""
+    }
+  ]
+}

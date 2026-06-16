@@ -1,0 +1,6 @@
+# 这是示例TXT输入文件，每行一条内容（#开头是注释，空行跳过）
+Hello World
+你好世界测试中文
+https://www.example.com/test/query?id=123&name=test
+二维码生成器批量测试
+Batch QR Code Generator Test
